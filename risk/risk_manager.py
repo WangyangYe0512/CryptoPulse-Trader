@@ -1,37 +1,46 @@
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from typing import Dict, List, Optional
+from datetime import datetime, timedelta
 from utils.logger import trading_logger
+# We need a reference to TradingEngine to get market_type and fetch live futures positions
+# from execution.trading_engine import TradingEngine # Assuming this import path is correct
 
 class RiskManager:
     """风险控制管理器"""
     
     def __init__(
         self,
+        trading_engine,
         max_position_size: float = 100.0,
         max_daily_loss: float = 5.0,
-        max_holding_time: int = 60,
-        stop_loss_pct: float = 1.0,
-        take_profit_pct: float = 2.0
+        max_holding_time_minutes: int = 60,
+        stop_loss_percent: float = 1.0,
+        take_profit_percent: float = 2.0,
+        config_manager=None
     ):
         """
         初始化风险控制器
         
         Args:
+            trading_engine: TradingEngine instance
             max_position_size: 每笔订单的最大仓位大小（USDT）
             max_daily_loss: 最大日亏损百分比
-            max_holding_time: 最大持仓时间（分钟）
-            stop_loss_pct: 止损百分比
-            take_profit_pct: 止盈百分比
+            max_holding_time_minutes: 最大持仓时间（分钟）
+            stop_loss_percent: 止损百分比
+            take_profit_percent: 止盈百分比
+            config_manager: ConfigManager instance
         """
+        self.trading_engine = trading_engine
         self.per_order_size = max_position_size
         self.max_daily_loss = max_daily_loss
-        self.max_holding_time = max_holding_time
-        self.stop_loss_pct = stop_loss_pct
-        self.take_profit_pct = take_profit_pct
+        self.max_holding_time_minutes = max_holding_time_minutes
+        self.stop_loss_percent = stop_loss_percent / 100
+        self.take_profit_percent = take_profit_percent / 100
+        self.config_manager = config_manager
         
         self.positions: Dict[str, List[Dict]] = {}
         self.daily_pnl: float = 0.0
         self.trades: List[Dict] = []
+        self.last_reset_time = datetime.now()
         
     def can_open_position(self, symbol: str, direction: str, price: float, existing_orders_count: int, max_orders_per_symbol: int) -> bool:
         """
@@ -116,57 +125,82 @@ class RiskManager:
             f"止损: {stop_loss_price}, 止盈: {take_profit_price}"
         )
     
-    def check_position_risk(self, symbol: str, current_price: float) -> Optional[Tuple[str, str]]:
+    def check_position_risk(self, symbol: str, current_price: float) -> List[Dict]:
         """
-        检查指定交易对下所有独立订单的风险
-        
-        Args:
-            symbol: 交易对符号
-            current_price: 当前价格
-            
-        Returns:
-            如果需要平仓，则返回 (平仓原因, 独立订单ID)，否则返回 None
+        Checks risk for all open orders of a symbol (spot) or the net position (futures).
+        Returns a list of orders/positions to be closed.
         """
-        try:
-            if symbol not in self.positions or not self.positions[symbol]:
-                return None
-            
-            # 遍历该交易对下的所有独立订单
-            for order in self.positions[symbol]:
-                if order['status'] != 'open': # 只检查状态为open的订单
-                    continue
+        to_close = []
+        market_type = self.trading_engine.get_market_type()
 
-                # 检查止损
-                if order['direction'] == 'long':
-                    if current_price <= order['stop_loss']:
-                        trading_logger.info(f"订单 {order['id']} ({symbol}) 触发止损 @ {current_price}")
-                        return 'stop_loss', order['id']
-                else: # short
-                    if current_price >= order['stop_loss']:
-                        trading_logger.info(f"订单 {order['id']} ({symbol}) 触发止损 @ {current_price}")
-                        return 'stop_loss', order['id']
+        if market_type == 'spot':
+            if symbol in self.positions:
+                for order in list(self.positions[symbol]): # Iterate over a copy if modifying list
+                    if order['status'] == 'open':
+                        # Check SL/TP
+                        if order['direction'] == 'long':
+                            if current_price <= order['stop_loss']:
+                                trading_logger.info(f"RM SPOT: {symbol} LONG SL hit for order {order['id']}. Price: {current_price} <= SL: {order['stop_loss']}")
+                                to_close.append({'order': order, 'reason': 'stop_loss', 'price': current_price})
+                                continue # Processed this order
+                            if current_price >= order['take_profit']:
+                                trading_logger.info(f"RM SPOT: {symbol} LONG TP hit for order {order['id']}. Price: {current_price} >= TP: {order['take_profit']}")
+                                to_close.append({'order': order, 'reason': 'take_profit', 'price': current_price})
+                                continue
+                        else:  # short
+                            if current_price >= order['stop_loss']:
+                                trading_logger.info(f"RM SPOT: {symbol} SHORT SL hit for order {order['id']}. Price: {current_price} >= SL: {order['stop_loss']}")
+                                to_close.append({'order': order, 'reason': 'stop_loss', 'price': current_price})
+                                continue
+                            if current_price <= order['take_profit']:
+                                trading_logger.info(f"RM SPOT: {symbol} SHORT TP hit for order {order['id']}. Price: {current_price} <= TP: {order['take_profit']}")
+                                to_close.append({'order': order, 'reason': 'take_profit', 'price': current_price})
+                                continue
                         
-                # 检查止盈
-                if order['direction'] == 'long':
-                    if current_price >= order['take_profit']:
-                        trading_logger.info(f"订单 {order['id']} ({symbol}) 触发止盈 @ {current_price}")
-                        return 'take_profit', order['id']
-                else: # short
-                    if current_price <= order['take_profit']:
-                        trading_logger.info(f"订单 {order['id']} ({symbol}) 触发止盈 @ {current_price}")
-                        return 'take_profit', order['id']
+                        # Check Max Holding Time (based on individual order's entry time)
+                        if (datetime.now() - order['entry_time']) > timedelta(minutes=self.max_holding_time_minutes):
+                            trading_logger.info(f"RM SPOT: {symbol} order {order['id']} max holding time reached.")
+                            to_close.append({'order': order, 'reason': 'timeout', 'price': current_price})
+                            continue
+        
+        elif market_type == 'future':
+            # For futures, we check each internally tracked conceptual order
+            # against the current market price, similar to spot.
+            if symbol in self.positions:
+                for order in list(self.positions[symbol]): # Iterate over a copy if modifying list
+                    if order['status'] == 'open':
+                        # Check SL/TP using pre-calculated values in the order object
+                        # These values (order['stop_loss'], order['take_profit']) were calculated 
+                        # and stored when self.add_position was called.
+                        if order['direction'] == 'long':
+                            if current_price <= order['stop_loss']:
+                                trading_logger.info(f"RM FUTURES: {symbol} LONG SL hit for order {order['id']}. Price: {current_price} <= SL: {order['stop_loss']}")
+                                to_close.append({'order': order, 'reason': 'stop_loss', 'price': current_price})
+                                continue 
+                            if current_price >= order['take_profit']:
+                                trading_logger.info(f"RM FUTURES: {symbol} LONG TP hit for order {order['id']}. Price: {current_price} >= TP: {order['take_profit']}")
+                                to_close.append({'order': order, 'reason': 'take_profit', 'price': current_price})
+                                continue
+                        elif order['direction'] == 'short':  # Assuming direction is 'long' or 'short'
+                            if current_price >= order['stop_loss']:
+                                trading_logger.info(f"RM FUTURES: {symbol} SHORT SL hit for order {order['id']}. Price: {current_price} >= SL: {order['stop_loss']}")
+                                to_close.append({'order': order, 'reason': 'stop_loss', 'price': current_price})
+                                continue
+                            if current_price <= order['take_profit']:
+                                trading_logger.info(f"RM FUTURES: {symbol} SHORT TP hit for order {order['id']}. Price: {current_price} <= TP: {order['take_profit']}")
+                                to_close.append({'order': order, 'reason': 'take_profit', 'price': current_price})
+                                continue
+                        else: # Should not happen if direction is always 'long' or 'short'
+                            trading_logger.warning(f"RM FUTURES: Unknown order direction '{order['direction']}' for order {order['id']}")
+                            continue
                         
-                # 检查持仓时间 (基于每个独立订单的entry_time)
-                holding_time = datetime.now() - order['entry_time']
-                if holding_time.total_seconds() / 60 >= self.max_holding_time:
-                    trading_logger.info(f"订单 {order['id']} ({symbol}) 触发持仓超时")
-                    return 'timeout', order['id']
-            
-            return None # 没有订单需要平仓
-            
-        except Exception as e:
-            trading_logger.error(f"持仓风险检查失败 ({symbol}): {str(e)}")
-            return None
+                        # Check Max Holding Time (based on individual order's entry time)
+                        if (datetime.now() - order['entry_time']) > timedelta(minutes=self.max_holding_time_minutes):
+                            trading_logger.info(f"RM FUTURES: {symbol} order {order['id']} max holding time reached.")
+                            to_close.append({'order': order, 'reason': 'timeout', 'price': current_price})
+                            continue
+        
+        return to_close
     
     def close_position(self, symbol: str, order_id_to_close: str, exit_price: float, reason: str) -> Optional[Dict]:
         """
@@ -273,3 +307,45 @@ class RiskManager:
         """重置每日统计"""
         self.daily_pnl = 0.0
         self.trades = [] 
+
+    def _update_daily_pnl(self, pnl_percentage: float):
+        # This needs to be more sophisticated, considering trade size relative to capital.
+        # For now, a simple sum of percentages for closed trades.
+        # This is also not true portfolio PNL.
+        if datetime.now().day != self.last_reset_time.day:
+            self.daily_pnl = 0.0
+            self.last_reset_time = datetime.now()
+        self.daily_pnl += pnl_percentage 
+
+    def get_all_open_orders_details(self) -> Dict[str, List[Dict]]:
+        """ 
+        Returns details of all orders the bot thinks are open (from its internal tracking).
+        For futures, this might not perfectly reflect the single net position on exchange but represents bot's intent.
+        """
+        open_orders = {}
+        for symbol, orders in self.positions.items():
+            active_orders_for_symbol = [o for o in orders if o['status'] == 'open']
+            if active_orders_for_symbol:
+                open_orders[symbol] = active_orders_for_symbol
+        return open_orders
+
+    def get_order_details(self, symbol: str, order_id: str) -> Optional[Dict]:
+        if symbol in self.positions:
+            for order in self.positions[symbol]:
+                if order['id'] == order_id:
+                    return order
+        return None
+
+    def get_total_open_orders_count(self) -> int:
+        count = 0
+        for symbol_orders in self.positions.values():
+            for order in symbol_orders:
+                if order['status'] == 'open':
+                    count += 1
+        return count
+
+    def remove_all_orders_for_symbol(self, symbol: str):
+        """Removes all tracked orders for a symbol, e.g., after a full position close for futures."""
+        if symbol in self.positions:
+            del self.positions[symbol]
+            trading_logger.info(f"RM: Removed all tracked orders for symbol {symbol}.") 

@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List
 import pandas as pd
-import numpy as np
 
 class BaseStrategy(ABC):
     """策略基类"""

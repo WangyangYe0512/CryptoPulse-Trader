@@ -43,23 +43,31 @@ class CryptoPulseTrader:
             confirmation_periods=self.config.get('trend.confirmation_periods', 3)
         )
         
-        self.risk_manager = RiskManager(
-            max_position_size=self.config.get('trading.per_order_size_usdt', 100.0),
-            max_daily_loss=self.config.get('trading.max_daily_loss_percent', 5.0),
-            max_holding_time=self.config.get('trading.max_holding_time_minutes', 60),
-            stop_loss_pct=self.config.get('trading.stop_loss_percent', 1.0),
-            take_profit_pct=self.config.get('trading.take_profit_percent', 2.0)
-        )
+        # Initialize TradingEngine first as RiskManager depends on it
         self.trading_engine = TradingEngine(
             api_key=self.config.get('api.binance.api_key'),
             api_secret=self.config.get('api.binance.api_secret'),
-            testnet=self.config.get('api.binance.testnet', True)
+            testnet=self.config.get('api.binance.testnet', True),
+            market_type='future' # Temporarily hardcoded for debugging
+            # market_type=self.config.get('trading.market_type', 'spot') # Original line
         )
+        
+        self.risk_manager = RiskManager(
+            trading_engine=self.trading_engine, 
+            max_position_size=self.config.get('trading.per_order_size_usdt', 100.0),
+            max_daily_loss=self.config.get('trading.max_daily_loss_percent', 5.0),
+            max_holding_time_minutes=self.config.get('trading.max_holding_time_minutes', 60), 
+            stop_loss_percent=self.config.get('trading.stop_loss_percent', 1.0),      
+            take_profit_percent=self.config.get('trading.take_profit_percent', 2.0),  
+            config_manager=self.config 
+        )
+        
         self.performance_analyzer = PerformanceAnalyzer()
         
         self.telegram_notifier = get_telegram_notifier(self.config)
         self.telegram_notifier.set_trading_engine(self.trading_engine)
         self.telegram_notifier.set_risk_manager(self.risk_manager)
+        self.telegram_notifier.set_main_bot_instance(self)
         
         self.check_interval = self.config.get('trading.check_interval_seconds', 60)
         self.last_scan_time = None
@@ -401,10 +409,6 @@ class CryptoPulseTrader:
         if self.config.get('notification.notify_on_status', True):
             self.telegram_notifier.send_error_notification("系统关闭中", "CryptoPulse Trader 正在关闭，将尝试平掉所有持仓订单...")
 
-        if self.telegram_notifier and hasattr(self.telegram_notifier, 'updater') and self.telegram_notifier.updater:
-            self.telegram_notifier.updater.stop()
-            trading_logger.info("Telegram机器人轮询已停止")
-        
         try:
             active_symbols_to_close = list(self.risk_manager.positions.keys())
             trading_logger.info(f"系统关闭：准备平仓 {len(active_symbols_to_close)} 个交易对下的所有独立订单。")
@@ -461,9 +465,9 @@ class CryptoPulseTrader:
             trading_logger.error(f"停止系统时平仓所有订单失败: {str(e)}", exc_info=True)
             if self.config.get('notification.notify_on_error', True):
                 self.telegram_notifier.send_error_notification("关机错误", f"平仓所有订单时发生严重错误: {str(e)}")
-            
+        
         if self.telegram_notifier:
-             self.telegram_notifier.stop() 
+            self.telegram_notifier.stop()
 
         trading_logger.info("交易系统已停止")
 

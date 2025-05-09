@@ -93,10 +93,11 @@ class ConfigManager:
         self._set_env_var(['trend', 'min_slope_percent'], 'TREND_MIN_SLOPE_PERCENT', 0.5, float)
 
         # Trading config
-        self._set_env_var(['trading', 'per_order_size_usdt'], 'PER_ORDER_SIZE_USDT', 100.0, float) # New/Renamed
+        self._set_env_var(['trading', 'market_type'], 'MARKET_TYPE', 'spot', str)
+        self._set_env_var(['trading', 'per_order_size_usdt'], 'PER_ORDER_SIZE_USDT', 100.0, float)
         self._set_env_var(['trading', 'max_orders_per_symbol'], 'MAX_ORDERS_PER_SYMBOL', 3, int)
         self._set_env_var(['trading', 'max_active_symbols'], 'MAX_ACTIVE_SYMBOLS', 5, int)
-        self._set_env_var(['trading', 'add_position_interval'], 'ADD_POSITION_INTERVAL_MINUTES', 30, int) # Renamed from ADD_POSITION_INTERVAL
+        self._set_env_var(['trading', 'add_position_interval'], 'ADD_POSITION_INTERVAL_MINUTES', 30, int)
         self._set_env_var(['trading', 'max_daily_loss_percent'], 'MAX_DAILY_LOSS_PERCENT', 5.0, float)
         self._set_env_var(['trading', 'max_holding_time_minutes'], 'MAX_HOLDING_TIME_MINUTES', 60, int)
         self._set_env_var(['trading', 'stop_loss_percent'], 'STOP_LOSS_PERCENT', 1.0, float)

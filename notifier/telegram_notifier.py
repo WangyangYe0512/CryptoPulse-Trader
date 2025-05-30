@@ -25,9 +25,12 @@ class TelegramNotifier:
         self.config_manager = config_manager or ConfigManager()
         
         # 读取配置
-        self.token = self.config_manager.get('notification.telegram_token', '')
-        self.chat_id = self.config_manager.get('notification.telegram_chat_id', '')
-        self.enabled = self.config_manager.get('notification.telegram_enabled', False)
+        telegram_config = self.config_manager.get('notification.telegram', {})
+        self.token = telegram_config.get('bot_token', '')
+        self.chat_id = telegram_config.get('chat_id', '')
+        self.enabled = telegram_config.get('enabled', False)
+        
+        trading_logger.info(f"Telegram配置: enabled={self.enabled}, token={self.token[:10]}..., chat_id={self.chat_id}")
         
         # 消息队列
         self.msg_queue = []
@@ -48,11 +51,12 @@ class TelegramNotifier:
         
         # 如果启用，则初始化机器人
         if self.enabled and self.token:
+            trading_logger.info("正在初始化Telegram机器人...")
             self._init_bot()
             # 加载授权的聊天ID
             self._load_authorized_chats()
         else:
-            trading_logger.warning("Telegram通知未启用或缺少配置")
+            trading_logger.warning(f"Telegram通知未启用或缺少配置: enabled={self.enabled}, token_exists={bool(self.token)}")
     
     def set_trading_engine(self, trading_engine):
         """设置交易引擎引用"""
@@ -69,9 +73,11 @@ class TelegramNotifier:
     def _init_bot(self):
         """初始化Telegram机器人"""
         try:
+            trading_logger.info("开始构建Telegram应用...")
             self.application = Application.builder().token(self.token).build()
             
             # 注册命令处理器
+            trading_logger.info("注册命令处理器...")
             self.application.add_handler(CommandHandler('start', self._start_cmd))
             self.application.add_handler(CommandHandler('help', self._help_cmd))
             self.application.add_handler(CommandHandler('status', self._status_cmd))
@@ -90,6 +96,7 @@ class TelegramNotifier:
             self.application.add_handler(MessageHandler(filters.COMMAND, self._unknown_cmd))
             
             # 启动机器人
+            trading_logger.info("启动Telegram机器人轮询线程...")
             self.polling_thread = threading.Thread(target=self._run_polling_thread, daemon=True)
             self.polling_thread.start()
             
@@ -674,9 +681,10 @@ class TelegramNotifier:
             if self.config_manager:
                 self.config_manager.reload()
                 
-                self.token = self.config_manager.get('notification.telegram_token', '')
-                self.chat_id = self.config_manager.get('notification.telegram_chat_id', '')
-                self.enabled = self.config_manager.get('notification.telegram_enabled', False)
+                telegram_config = self.config_manager.get('notification.telegram', {})
+                self.token = telegram_config.get('bot_token', '')
+                self.chat_id = telegram_config.get('chat_id', '')
+                self.enabled = telegram_config.get('enabled', False)
                 
                 self._load_authorized_chats()
                 

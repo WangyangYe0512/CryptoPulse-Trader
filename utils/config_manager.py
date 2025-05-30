@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import yaml
 from dotenv import load_dotenv
 from utils.logger import trading_logger
@@ -7,35 +7,112 @@ from utils.logger import trading_logger
 class ConfigManager:
     """配置管理器"""
     
-    def __init__(self, config_path: str = 'config/config.yaml'):
+    def __init__(self, config_file: str = 'config.yaml'):
         """
         初始化配置管理器
         
         Args:
-            config_path: 配置文件路径
+            config_file: 配置文件路径
         """
-        self.config_path = config_path
-        self.config: Dict[str, Any] = {}
-        self.load_config()
+        self.config_file = config_file
+        self.config = {}
         
-    def load_config(self):
+        # 加载.env文件
+        load_dotenv()
+        
+        # 加载配置文件
+        self._load_config()
+        
+    def _load_config(self):
         """加载配置文件"""
         try:
-            load_dotenv() 
+            with open(self.config_file, 'r') as f:
+                self.config = yaml.safe_load(f)
+                
+            # 添加环境变量中的敏感信息
+            self.config['api'] = {
+                'binance': {
+                    'api_key': os.getenv('BINANCE_API_KEY'),
+                    'api_secret': os.getenv('BINANCE_API_SECRET')
+                },
+                'coingecko': {
+                    'api_key': os.getenv('COINGECKO_API_KEY')
+                }
+            }
             
-            default_config = {}
-            if os.path.exists(self.config_path):
-                with open(self.config_path, 'r') as f:
-                    default_config = yaml.safe_load(f) or {}
-            else:
-                trading_logger.warning(f"配置文件不存在: {self.config_path}, 将使用环境变量或硬编码的默认值。")
+            # 初始化通知配置
+            if 'notification' not in self.config:
+                self.config['notification'] = {}
             
-            self.config = default_config
-            self._override_with_env_vars() # New method to handle overrides
+            # 设置Telegram配置
+            self.config['notification']['telegram'] = {
+                'enabled': os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true',
+                'bot_token': os.getenv('TELEGRAM_BOT_TOKEN', ''),
+                'chat_id': os.getenv('TELEGRAM_CHAT_ID', '')
+            }
+            
+            # 应用环境变量覆盖
+            self._override_with_env_vars()
+            
+            trading_logger.info("配置加载成功")
             
         except Exception as e:
-            trading_logger.error(f"加载配置失败: {str(e)}", exc_info=True)
-            self.config = {} # Fallback to empty config on error
+            trading_logger.error(f"加载配置文件失败: {str(e)}", exc_info=True)
+            raise
+            
+    def get(self, key: str, default=None):
+        """
+        获取配置项
+        
+        Args:
+            key: 配置项键名，支持点号分隔的多级键名
+            default: 默认值
+            
+        Returns:
+            配置项值
+        """
+        try:
+            value = self.config
+            for k in key.split('.'):
+                value = value[k]
+            return value
+        except (KeyError, TypeError):
+            return default
+            
+    def set(self, key: str, value):
+        """
+        设置配置项
+        
+        Args:
+            key: 配置项键名，支持点号分隔的多级键名
+            value: 配置项值
+        """
+        try:
+            keys = key.split('.')
+            target = self.config
+            for k in keys[:-1]:
+                target = target.setdefault(k, {})
+            target[keys[-1]] = value
+        except Exception as e:
+            trading_logger.error(f"设置配置项失败: {str(e)}", exc_info=True)
+            raise
+            
+    def save(self):
+        """保存配置到文件"""
+        try:
+            # 创建配置的副本，移除敏感信息
+            config_copy = self.config.copy()
+            if 'api' in config_copy:
+                del config_copy['api']
+                
+            with open(self.config_file, 'w') as f:
+                yaml.dump(config_copy, f, default_flow_style=False)
+                
+            trading_logger.info("配置保存成功")
+            
+        except Exception as e:
+            trading_logger.error(f"保存配置文件失败: {str(e)}", exc_info=True)
+            raise
 
     def _ensure_path(self, keys: list):
         """Ensures the path exists in the config dict, creating it if necessary."""
@@ -78,6 +155,11 @@ class ConfigManager:
         self._set_env_var(['api', 'binance', 'api_secret'], 'BINANCE_API_SECRET', '')
         self._set_env_var(['api', 'binance', 'testnet'], 'BINANCE_TESTNET', 'true', lambda v: v.lower() == 'true')
 
+        # Telegram config
+        self._set_env_var(['notification', 'telegram', 'enabled'], 'TELEGRAM_ENABLED', 'false', lambda v: v.lower() == 'true')
+        self._set_env_var(['notification', 'telegram', 'bot_token'], 'TELEGRAM_BOT_TOKEN', '')
+        self._set_env_var(['notification', 'telegram', 'chat_id'], 'TELEGRAM_CHAT_ID', '')
+
         # Scanner config
         self._set_env_var(['scanner', 'scan_interval'], 'SCAN_INTERVAL_SECONDS', 3600, int)
         self._set_env_var(['scanner', 'volatility_timeframe'], 'VOLATILITY_TIMEFRAME', '1h')
@@ -105,9 +187,6 @@ class ConfigManager:
         self._set_env_var(['trading', 'check_interval_seconds'], 'CHECK_INTERVAL_SECONDS', 60, int)
 
         # Notification config
-        self._set_env_var(['notification', 'telegram_enabled'], 'TELEGRAM_ENABLED', 'true', lambda v: v.lower() == 'true')
-        self._set_env_var(['notification', 'telegram_token'], 'TELEGRAM_BOT_TOKEN', '')
-        self._set_env_var(['notification', 'telegram_chat_id'], 'TELEGRAM_CHAT_ID', '')
         self._set_env_var(['notification', 'notify_on_trade'], 'NOTIFY_ON_TRADE', 'true', lambda v: v.lower() == 'true')
         self._set_env_var(['notification', 'notify_on_error'], 'NOTIFY_ON_ERROR', 'true', lambda v: v.lower() == 'true')
         self._set_env_var(['notification', 'notify_on_status'], 'NOTIFY_ON_STATUS', 'true', lambda v: v.lower() == 'true')
@@ -122,52 +201,5 @@ class ConfigManager:
         self._set_env_var(['database', 'path'], 'DB_PATH', 'data/')
         self._set_env_var(['database', 'filename'], 'DB_FILENAME', 'trading_data.sqlite')
             
-    def get(self, key: str, default: Any = None) -> Any:
-        """
-        获取配置值 (e.g., 'trading.per_order_size_usdt')
-        """
-        try:
-            keys = key.split('.')
-            value = self.config
-            for k in keys:
-                value = value[k]
-            return value
-        except KeyError: # More specific exception
-            # trading_logger.debug(f"配置键 '{key}' 未找到，返回默认值: {default}")
-            return default
-        except TypeError: # If a path component is not a dict (e.g. config['api'] is a string but trying to get config['api']['binance'])
-            # trading_logger.debug(f"配置路径类型错误，键 '{key}' 的某个父级不是字典，返回默认值: {default}")
-            return default
-            
-    def set(self, key: str, value: Any):
-        """
-        设置配置值 (主要用于测试或动态修改，不保存到文件)
-        """
-        try:
-            keys = key.split('.')
-            current_level = self._ensure_path(keys)
-            if current_level is not None:
-                 current_level[keys[-1]] = value
-        except Exception as e:
-            trading_logger.error(f"设置配置失败 ({key}): {str(e)}", exc_info=True)
-            
-    # save and reload methods are not strictly necessary if we primarily rely on init loading
-    # but can be useful for advanced scenarios or if config file is edited at runtime.
-    def save_to_yaml(self, path: Optional[str] = None):
-        """将当前配置保存到指定的YAML文件 (主要用于调试或生成模板)"""
-        save_path = path or self.config_path
-        try:
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            with open(save_path, 'w') as f:
-                yaml.dump(self.config, f, sort_keys=False)
-            trading_logger.info(f"配置已保存到 {save_path}")
-        except Exception as e:
-            trading_logger.error(f"保存配置到 {save_path} 失败: {str(e)}", exc_info=True)
-            
-    def reload(self):
-        """重新加载配置文件和环境变量"""
-        trading_logger.info(f"重新加载配置自 {self.config_path} 和环境变量...")
-        self.load_config()
-        
     def get_all(self) -> Dict[str, Any]:
         return self.config.copy() 

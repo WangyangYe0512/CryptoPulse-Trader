@@ -38,10 +38,8 @@ class TradingEngine:
         if testnet:
             self.exchange.set_sandbox_mode(True)
             trading_logger.info(f"已启用Binance {self.market_type.capitalize()} 测试网络模式")
-            trading_logger.info(f"Binance API URLs in use ({self.market_type}): {self.exchange.urls['api']}")
         else:
             trading_logger.info(f"Binance {self.market_type.capitalize()} 主网络模式已启用")
-            trading_logger.info(f"Binance API URLs in use ({self.market_type}): {self.exchange.urls['api']}")
         
         self.positions: Dict[str, Dict] = {}  # 修改为更准确的类型提示
         self.trades: List[Dict] = []  # 修改为更准确的类型提示

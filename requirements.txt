@@ -1,10 +1,28 @@
-ccxt>=2.5.0
-pandas>=1.3.4
-numpy>=1.20.3
-matplotlib>=3.4.3
-scipy>=1.7.1
-python-dotenv>=0.19.1
-pyyaml>=6.0
-python-telegram-bot>=13.7
-pytz>=2021.3
-requests>=2.26.0 
+# API客户端
+python-binance==1.0.19
+pycoingecko==3.1.0
+python-telegram-bot==20.7
+
+# 数据处理
+pandas==2.1.4
+numpy==1.26.2
+ta-lib==0.4.28
+
+# WebSocket
+websocket-client==1.7.0
+
+# 工具
+pyyaml==6.0.1
+python-dotenv==1.0.0
+requests==2.31.0
+aiohttp==3.9.1
+
+# 日志
+loguru==0.7.2
+
+# 类型提示
+typing-extensions==4.9.0
+
+# 测试
+pytest==7.4.3
+pytest-asyncio==0.23.2 

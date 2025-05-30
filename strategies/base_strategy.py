@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List
 import pandas as pd
+import logging
+
+trading_logger = logging.getLogger(__name__)
 
 class BaseStrategy(ABC):
     """策略基类"""
@@ -88,4 +91,18 @@ class BaseStrategy(ABC):
         cumulative = (1 + returns).cumprod()
         running_max = cumulative.cummax()
         drawdown = (cumulative - running_max) / running_max
-        return drawdown.min() 
+        return drawdown.min()
+
+    def _scan_market(self, symbol: str, trend_data: pd.DataFrame, volatility: float, volume_24h_usdt: float):
+        trend_confirmed, direction = self.trend_analyzer.analyze_trend(trend_data)
+        if trend_confirmed:
+            # 生成交易信号
+            trading_logger.info(f"{symbol} 趋势分析结果: confirmed={trend_confirmed}, direction={direction}")
+            trading_logger.info(f"{symbol} 波动率: {volatility}%")
+            trading_logger.info(f"{symbol} 24小时成交量: {volume_24h_usdt} USDT")
+        else:
+            # 处理趋势未确认的情况
+            pass
+
+        # 返回包含交易信号的 DataFrame
+        return pd.DataFrame() 

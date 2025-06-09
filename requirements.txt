@@ -1,28 +1,34 @@
-# API客户端
-python-binance==1.0.19
-pycoingecko==3.1.0
-python-telegram-bot==20.7
+# =================================
+# CryptoPulse Trader Dependencies
+# =================================
 
-# 数据处理
-pandas==2.1.4
-numpy==1.26.2
-ta-lib==0.4.28
+# 核心交易所API库 - 项目最重要的依赖
+ccxt==4.2.25
 
-# WebSocket
-websocket-client==1.7.0
+# WebSocket通信 - 实时数据获取
+websockets==12.0            # WebSocket客户端(主要使用)
+websocket-client==1.7.0     # WebSocket客户端(trend_tracker使用)
 
-# 工具
-pyyaml==6.0.1
-python-dotenv==1.0.0
-requests==2.31.0
-aiohttp==3.9.1
+# HTTP客户端
+aiohttp==3.9.1              # 异步HTTP客户端(获取CoinGecko数据)
 
-# 日志
-loguru==0.7.2
+# 配置和环境
+pyyaml==6.0.1               # YAML配置文件解析
+python-dotenv==1.0.0        # 环境变量管理
 
-# 类型提示
-typing-extensions==4.9.0
+# 数据处理 - 仅在strategies/base_strategy.py中使用
+pandas==2.1.4               # 数据分析和处理
 
-# 测试
-pytest==7.4.3
-pytest-asyncio==0.23.2 
+# 开发和测试(可选)
+# pytest==7.4.3             # 测试框架
+# pytest-asyncio==0.23.2    # 异步测试支持
+
+# 以下库在代码中未被实际使用，已移除：
+# - ta-lib (没有import语句)
+# - loguru (使用标准logging)
+# - numpy (没有使用)
+# - python-binance (使用ccxt替代)
+# - pycoingecko (直接使用HTTP请求)
+# - python-telegram-bot (配置了但未实现)
+# - requests (使用aiohttp替代)
+# - typing-extensions (Python 3.8+内置) 

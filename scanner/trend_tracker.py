@@ -7,16 +7,21 @@ from utils.logger import trading_logger
 class TrendTracker:
     """WebSocket趋势追踪器"""
     
-    def __init__(self, symbols: List[str], on_trend_update: Optional[Callable] = None):
+    def __init__(self, symbols: List[str], on_trend_update: Optional[Callable] = None, 
+                 price_weight: float = 2.0, volume_weight: float = 0.5):
         """
         初始化趋势追踪器
         
         Args:
             symbols: 要追踪的交易对列表
             on_trend_update: 趋势更新回调函数
+            price_weight: 价格变化权重系数
+            volume_weight: 成交量变化权重系数
         """
         self.symbols = symbols
         self.on_trend_update = on_trend_update
+        self.price_weight = price_weight
+        self.volume_weight = volume_weight
         self.ws = None
         self.running = False
         self.kline_data: Dict[str, List[Dict]] = {}
@@ -164,7 +169,7 @@ class TrendTracker:
             direction = 'up' if price_change > 0 else 'down'
             
             # 计算趋势强度 (基于价格变化和成交量变化的综合评分)
-            strength = min(100, abs(price_change) * 2 + abs(volume_change) * 0.5)
+            strength = min(100, abs(price_change) * self.price_weight + abs(volume_change) * self.volume_weight)
             
             return {
                 'direction': direction,

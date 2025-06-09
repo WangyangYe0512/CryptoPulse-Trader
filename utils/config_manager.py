@@ -7,7 +7,7 @@ from utils.logger import trading_logger
 class ConfigManager:
     """配置管理器"""
     
-    def __init__(self, config_file: str = 'config.yaml'):
+    def __init__(self, config_file: str = 'config/config.yaml'):
         """
         初始化配置管理器
         

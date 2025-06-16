@@ -19,6 +19,9 @@ python-dotenv==1.0.0        # 环境变量管理
 # 数据处理 - 仅在strategies/base_strategy.py中使用
 pandas==2.1.4               # 数据分析和处理
 
+# Telegram Bot - 通知和控制
+python-telegram-bot==21.0.1  # Telegram Bot API
+
 # 开发和测试(可选)
 # pytest==7.4.3             # 测试框架
 # pytest-asyncio==0.23.2    # 异步测试支持
@@ -29,6 +32,5 @@ pandas==2.1.4               # 数据分析和处理
 # - numpy (没有使用)
 # - python-binance (使用ccxt替代)
 # - pycoingecko (直接使用HTTP请求)
-# - python-telegram-bot (配置了但未实现)
 # - requests (使用aiohttp替代)
 # - typing-extensions (Python 3.8+内置) 

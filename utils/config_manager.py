@@ -44,12 +44,28 @@ class ConfigManager:
             if 'notification' not in self.config:
                 self.config['notification'] = {}
             
-            # 设置Telegram配置
-            self.config['notification']['telegram'] = {
-                'enabled': os.getenv('TELEGRAM_ENABLED', 'false').lower() == 'true',
+            # 确保telegram配置存在
+            if 'telegram' not in self.config['notification']:
+                self.config['notification']['telegram'] = {}
+            
+            # 设置Telegram配置 - 敏感信息从环境变量读取
+            telegram_config = self.config['notification']['telegram']
+            telegram_config.update({
                 'bot_token': os.getenv('TELEGRAM_BOT_TOKEN', ''),
-                'chat_id': os.getenv('TELEGRAM_CHAT_ID', '')
-            }
+                'chat_id': os.getenv('TELEGRAM_CHAT_ID', ''),
+            })
+            
+            # 功能开关从config.yaml读取，如果没有则设置默认值
+            if 'enabled' not in telegram_config:
+                telegram_config['enabled'] = True
+            if 'trade_notifications' not in telegram_config:
+                telegram_config['trade_notifications'] = True
+            if 'error_notifications' not in telegram_config:
+                telegram_config['error_notifications'] = True
+            if 'status_notifications' not in telegram_config:
+                telegram_config['status_notifications'] = True
+            if 'commands_enabled' not in telegram_config:
+                telegram_config['commands_enabled'] = True
             
             # 应用环境变量覆盖
             self._override_with_env_vars()
@@ -155,8 +171,7 @@ class ConfigManager:
         self._set_env_var(['api', 'binance', 'api_secret'], 'BINANCE_API_SECRET', '')
         self._set_env_var(['api', 'binance', 'testnet'], 'BINANCE_TESTNET', 'true', lambda v: v.lower() == 'true')
 
-        # Telegram config
-        self._set_env_var(['notification', 'telegram', 'enabled'], 'TELEGRAM_ENABLED', 'false', lambda v: v.lower() == 'true')
+        # Telegram config - 只覆盖敏感信息
         self._set_env_var(['notification', 'telegram', 'bot_token'], 'TELEGRAM_BOT_TOKEN', '')
         self._set_env_var(['notification', 'telegram', 'chat_id'], 'TELEGRAM_CHAT_ID', '')
 

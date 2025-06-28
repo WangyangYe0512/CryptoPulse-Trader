@@ -164,10 +164,21 @@ class WebSocketMarketScanner:
 
     def set_executor(self, executor):
         """设置交易执行器"""
-        self.executor = executor
-        # 初始化符号验证器
-        self.symbol_validator = SymbolValidator(executor)
-        trading_logger.info("Symbol validator initialized with executor")
+        try:
+            trading_logger.info(f"Setting executor: {type(executor).__name__}")
+            self.executor = executor
+            
+            # 初始化符号验证器
+            try:
+                trading_logger.info("Initializing SymbolValidator...")
+                self.symbol_validator = SymbolValidator(executor)
+                trading_logger.info("Symbol validator initialized with executor - VALIDATION ACTIVE")
+            except Exception as e:
+                trading_logger.error(f"Failed to initialize SymbolValidator: {e}", exc_info=True)
+                self.symbol_validator = None
+                
+        except Exception as e:
+            trading_logger.error(f"Error in set_executor: {e}", exc_info=True)
         
     async def fetch_coingecko_movers(self) -> Tuple[List[str], List[str]]:
         """获取CoinGecko的涨跌幅榜"""
@@ -697,41 +708,61 @@ class WebSocketMarketScanner:
             active_positions_ccxt_format = await self.executor.get_active_positions_symbols() # Expected: Set of 'BTC/USDT'
             trading_logger.info(f"DEBUG: Active_positions_ccxt_format (raw from executor, count {len(active_positions_ccxt_format)}): {active_positions_ccxt_format}")
 
-            # 正确的符号格式转换逻辑
+            # 🛡️ 正确的符号格式转换逻辑 (修复版本)
             active_positions_watchlist_format = set()
+            trading_logger.info(f"🔍 DEBUG: Converting active positions from CCXT format: {active_positions_ccxt_format}")
+            
             for s in active_positions_ccxt_format:
                 if isinstance(s, str) and 'USDT' in s:
+                    original_symbol = s
                     # 处理不同的符号格式
                     if ':USDT' in s:  # 永续合约格式: 'BTC/USDT:USDT'
                         base = s.split('/')[0]  # 提取基础币种
                         watchlist_symbol = f"{base.upper()}USDT"
+                        trading_logger.debug(f"  永续合约转换: {original_symbol} -> {watchlist_symbol}")
                     elif '/USDT' in s:  # 现货格式: 'BTC/USDT'
                         base = s.split('/')[0]  # 提取基础币种
                         watchlist_symbol = f"{base.upper()}USDT"
+                        trading_logger.debug(f"  现货转换: {original_symbol} -> {watchlist_symbol}")
                     else:  # 已经是正确格式: 'BTCUSDT'
                         watchlist_symbol = s.upper()
+                        trading_logger.debug(f"  已正确格式: {original_symbol} -> {watchlist_symbol}")
+                    
+                    # 🛡️ 额外验证：检查是否出现USDTUSDT错误
+                    if watchlist_symbol.endswith('USDTUSDT'):
+                        trading_logger.error(f"⚠️ CRITICAL ERROR: Detected USDTUSDT format! Original: {original_symbol} -> Wrong: {watchlist_symbol}")
+                        # 立即修复
+                        watchlist_symbol = watchlist_symbol[:-4]  # 移除多余的USDT
+                        trading_logger.info(f"✅ Auto-fixed to: {watchlist_symbol}")
                     
                     active_positions_watchlist_format.add(watchlist_symbol)
+                    
+            trading_logger.info(f"🎯 DEBUG: Converted active positions to watchlist format: {active_positions_watchlist_format}")
             
             # 🛡️ 验证活跃持仓符号格式的正确性
             if self.symbol_validator:
                 try:
+                    trading_logger.info(f"🔍 Running symbol validator on: {list(active_positions_watchlist_format)}")
                     valid_symbols, fixed_symbols, invalid_symbols = await self.symbol_validator.validate_and_fix_symbols(
                         list(active_positions_watchlist_format)
                     )
                     
                     if fixed_symbols:
-                        trading_logger.warning(f"Active positions symbols auto-fixed: {fixed_symbols}")
+                        trading_logger.warning(f"🔧 Active positions symbols auto-fixed: {fixed_symbols}")
                         # 更新为修复后的符号
                         active_positions_watchlist_format = set(valid_symbols + fixed_symbols)
                     
                     if invalid_symbols:
-                        trading_logger.error(f"Invalid active positions symbols detected and removed: {invalid_symbols}")
+                        trading_logger.error(f"❌ Invalid active positions symbols detected and removed: {invalid_symbols}")
                         # 移除无效符号
                         active_positions_watchlist_format = set(valid_symbols + fixed_symbols)
+                    
+                    trading_logger.info(f"✅ Symbol validation completed. Final symbols: {active_positions_watchlist_format}")
                         
                 except Exception as e:
-                    trading_logger.warning(f"Symbol validation failed, proceeding without validation: {e}")
+                    trading_logger.error(f"❌ Symbol validation failed, proceeding without validation: {e}", exc_info=True)
+            else:
+                trading_logger.warning("⚠️ NO SYMBOL VALIDATOR AVAILABLE - This is the problem!")
             
             trading_logger.info(f"DEBUG: Active_positions_watchlist_format (processed 'BTCUSDT' format, count {len(active_positions_watchlist_format)}): {active_positions_watchlist_format}")
             

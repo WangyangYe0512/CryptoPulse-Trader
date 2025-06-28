@@ -5,6 +5,7 @@ from typing import List, Set, Tuple
 import websockets
 from datetime import datetime, timedelta
 from utils.logger import trading_logger
+from utils.symbol_validator import SymbolValidator
 from strategy.trend_following import TrendFollowingStrategy
 import os
 from dotenv import load_dotenv
@@ -92,6 +93,9 @@ class WebSocketMarketScanner:
         self.max_reconnect_attempts = 5
         self.stop_event = threading.Event()
         
+        # 符号验证器（延迟初始化，等executor设置后再创建）
+        self.symbol_validator = None
+        
         # --- Robustly initialize TrendFollowingStrategy from config ---
         strat_cfg_path = 'strategy.trend_following'
         custom_interval_cfg_path = f'{strat_cfg_path}.custom_interval'
@@ -161,6 +165,9 @@ class WebSocketMarketScanner:
     def set_executor(self, executor):
         """设置交易执行器"""
         self.executor = executor
+        # 初始化符号验证器
+        self.symbol_validator = SymbolValidator(executor)
+        trading_logger.info("Symbol validator initialized with executor")
         
     async def fetch_coingecko_movers(self) -> Tuple[List[str], List[str]]:
         """获取CoinGecko的涨跌幅榜"""
@@ -487,6 +494,18 @@ class WebSocketMarketScanner:
                 symbol = ticker_data['s']
                 trading_logger.debug(f"Processing ticker for symbol: {symbol}. Current watchlist: {self.watchlist}")
 
+                # 🛡️ 验证接收到的ticker符号是否有效
+                if self.symbol_validator:
+                    try:
+                        is_valid = await self.symbol_validator.is_valid_watchlist_symbol(symbol)
+                        if not is_valid:
+                            trading_logger.warning(f"Received ticker for INVALID symbol {symbol}, rejecting data")
+                            return
+                    except Exception as e:
+                        trading_logger.debug(f"Symbol validation check failed for {symbol}: {e}")
+                        # 继续处理，但记录警告
+                        pass
+
                 if symbol not in self.watchlist:
                     trading_logger.debug(f"Symbol {symbol} NOT in watchlist, skipping.")
                     return
@@ -678,7 +697,42 @@ class WebSocketMarketScanner:
             active_positions_ccxt_format = await self.executor.get_active_positions_symbols() # Expected: Set of 'BTC/USDT'
             trading_logger.info(f"DEBUG: Active_positions_ccxt_format (raw from executor, count {len(active_positions_ccxt_format)}): {active_positions_ccxt_format}")
 
-            active_positions_watchlist_format = {s.replace('/', '').replace(':USDT', '').upper() + 'USDT' for s in active_positions_ccxt_format if isinstance(s, str) and ('USDT' in s)}
+            # 正确的符号格式转换逻辑
+            active_positions_watchlist_format = set()
+            for s in active_positions_ccxt_format:
+                if isinstance(s, str) and 'USDT' in s:
+                    # 处理不同的符号格式
+                    if ':USDT' in s:  # 永续合约格式: 'BTC/USDT:USDT'
+                        base = s.split('/')[0]  # 提取基础币种
+                        watchlist_symbol = f"{base.upper()}USDT"
+                    elif '/USDT' in s:  # 现货格式: 'BTC/USDT'
+                        base = s.split('/')[0]  # 提取基础币种
+                        watchlist_symbol = f"{base.upper()}USDT"
+                    else:  # 已经是正确格式: 'BTCUSDT'
+                        watchlist_symbol = s.upper()
+                    
+                    active_positions_watchlist_format.add(watchlist_symbol)
+            
+            # 🛡️ 验证活跃持仓符号格式的正确性
+            if self.symbol_validator:
+                try:
+                    valid_symbols, fixed_symbols, invalid_symbols = await self.symbol_validator.validate_and_fix_symbols(
+                        list(active_positions_watchlist_format)
+                    )
+                    
+                    if fixed_symbols:
+                        trading_logger.warning(f"Active positions symbols auto-fixed: {fixed_symbols}")
+                        # 更新为修复后的符号
+                        active_positions_watchlist_format = set(valid_symbols + fixed_symbols)
+                    
+                    if invalid_symbols:
+                        trading_logger.error(f"Invalid active positions symbols detected and removed: {invalid_symbols}")
+                        # 移除无效符号
+                        active_positions_watchlist_format = set(valid_symbols + fixed_symbols)
+                        
+                except Exception as e:
+                    trading_logger.warning(f"Symbol validation failed, proceeding without validation: {e}")
+            
             trading_logger.info(f"DEBUG: Active_positions_watchlist_format (processed 'BTCUSDT' format, count {len(active_positions_watchlist_format)}): {active_positions_watchlist_format}")
             
             # 5. Construct the final target watchlist (symbols like 'BTCUSDT')
@@ -708,6 +762,26 @@ class WebSocketMarketScanner:
             # 6. Manage subscriptions
             # self.watchlist stores symbols like 'BTCUSDT'
             # self._send_subscription_update expects lists of symbols like 'BTCUSDT'
+            
+            # 🛡️ 最终验证：确保所有准备加入watchlist的符号都是有效的
+            if self.symbol_validator:
+                try:
+                    valid_symbols, fixed_symbols, invalid_symbols = await self.symbol_validator.validate_and_fix_symbols(
+                        list(final_target_watchlist_symbols)
+                    )
+                    
+                    if fixed_symbols:
+                        trading_logger.warning(f"Final watchlist symbols auto-fixed: {len(fixed_symbols)} symbols")
+                    
+                    if invalid_symbols:
+                        trading_logger.error(f"Invalid symbols removed from final watchlist: {invalid_symbols}")
+                    
+                    # 更新为验证后的符号集合
+                    final_target_watchlist_symbols = set(valid_symbols + fixed_symbols)
+                    trading_logger.info(f"✅ Symbol validation complete. Final validated watchlist: {len(final_target_watchlist_symbols)} symbols")
+                    
+                except Exception as e:
+                    trading_logger.warning(f"Final symbol validation failed, proceeding without validation: {e}")
             
             symbols_to_send_for_subscribe = list(final_target_watchlist_symbols - self.watchlist)
             symbols_to_send_for_unsubscribe = list(self.watchlist - final_target_watchlist_symbols)

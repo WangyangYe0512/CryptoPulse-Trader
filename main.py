@@ -260,7 +260,7 @@ class CryptoPulseTrader:
                 
                 if approved_signals:
                     # 执行交易
-                    self._execute_trades(approved_signals)
+                    await self._execute_trades(approved_signals)
                 else:
                     trading_logger.info(f"信号被风险管理器拒绝: {signal['symbol']}")
             
@@ -293,7 +293,7 @@ class CryptoPulseTrader:
                 return
             
             # 4. 执行交易（关键步骤）
-            self._execute_trades(approved_signals)
+            await self._execute_trades(approved_signals)
             
         except Exception as e:
             trading_logger.error(f"交易周期执行失败: {e}", exc_info=True)
@@ -380,7 +380,7 @@ class CryptoPulseTrader:
             self._safe_notify_error("Risk Check Error", str(e))
             return []
     
-    def _execute_trades(self, signals):
+    async def _execute_trades(self, signals):
         """执行交易"""
         try:
             trading_logger.info(f"执行 {len(signals)} 个交易...")
@@ -388,7 +388,7 @@ class CryptoPulseTrader:
             trade_results = []
             for signal in signals:
                 try:
-                    result = self.executor.execute_trade(signal)
+                    result = await self.executor.execute_signal(signal)
                     trade_results.append(result)
                     
                     if result.get('success'):
@@ -510,10 +510,9 @@ class CryptoPulseTrader:
                 asyncio.run(self.market_scanner.stop_ws_connection())
                 trading_logger.info("市场扫描器已停止")
             
-            # 4. 停止交易执行器
+            # 4. 交易执行器无需特殊停止操作
             if self.executor:
-                self.executor.stop()
-                trading_logger.info("交易执行器已停止")
+                trading_logger.info("交易执行器连接将自动关闭")
             
             # 5. 输出最终统计信息
             self._print_final_stats()

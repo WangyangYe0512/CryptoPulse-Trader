@@ -9,33 +9,37 @@ class RiskManager:
     
     def __init__(
         self,
-        trading_engine,
-        max_position_size: float = 100.0,
-        max_daily_loss: float = 5.0,
-        max_holding_time_minutes: int = 60,
-        stop_loss_percent: float = 1.0,
-        take_profit_percent: float = 2.0,
-        config_manager=None
+        config_manager,
+        max_position_size: float = None,
+        max_daily_loss: float = None,
+        max_holding_time_minutes: int = None,
+        stop_loss_percent: float = None,
+        take_profit_percent: float = None
     ):
         """
         初始化风险控制器
         
         Args:
-            trading_engine: TradingEngine instance
-            max_position_size: 每笔订单的最大仓位大小（USDT）
-            max_daily_loss: 最大日亏损百分比
-            max_holding_time_minutes: 最大持仓时间（分钟）
-            stop_loss_percent: 止损百分比
-            take_profit_percent: 止盈百分比
             config_manager: ConfigManager instance
+            max_position_size: 每笔订单的最大仓位大小（USDT），None时从配置读取
+            max_daily_loss: 最大日亏损百分比，None时从配置读取
+            max_holding_time_minutes: 最大持仓时间（分钟），None时从配置读取
+            stop_loss_percent: 止损百分比，None时从配置读取
+            take_profit_percent: 止盈百分比，None时从配置读取
         """
-        self.trading_engine = trading_engine
-        self.per_order_size = max_position_size
-        self.max_daily_loss = max_daily_loss
-        self.max_holding_time_minutes = max_holding_time_minutes
-        self.stop_loss_percent = stop_loss_percent / 100
-        self.take_profit_percent = take_profit_percent / 100
         self.config_manager = config_manager
+        
+        # 从配置中读取参数，如果未提供则使用配置值
+        self.per_order_size = max_position_size or config_manager.get('risk.max_position_size', 15.0)
+        self.max_daily_loss = max_daily_loss or config_manager.get('risk.max_daily_loss', 100.0)
+        self.max_holding_time_minutes = max_holding_time_minutes or config_manager.get('trading.max_holding_time_minutes', 60)
+        self.stop_loss_percent = (stop_loss_percent or config_manager.get('risk.stop_loss_pct', 1.0)) / 100
+        self.take_profit_percent = (take_profit_percent or config_manager.get('risk.take_profit_pct', 2.0)) / 100
+        
+        # 从配置中读取市场类型
+        self.market_type = config_manager.get('trading.market_type', 'futures')
+        
+        trading_logger.info(f"RiskManager初始化: 单笔限额={self.per_order_size}USDT, 日亏损限制={self.max_daily_loss}USDT, 市场类型={self.market_type}")
         
         self.positions: Dict[str, List[Dict]] = {}
         self.daily_pnl: float = 0.0
@@ -131,7 +135,7 @@ class RiskManager:
         Returns a list of orders/positions to be closed.
         """
         to_close = []
-        market_type = self.trading_engine.get_market_type()
+        market_type = self.market_type
 
         if market_type == 'spot':
             if symbol in self.positions:
@@ -349,3 +353,60 @@ class RiskManager:
         if symbol in self.positions:
             del self.positions[symbol]
             trading_logger.info(f"RM: Removed all tracked orders for symbol {symbol}.") 
+
+    def check_risk(self, signal: Dict) -> bool:
+        """
+        检查交易信号是否通过风险控制
+        
+        Args:
+            signal: 交易信号字典，包含symbol、type、price等信息
+            
+        Returns:
+            bool: True表示通过风险检查，False表示拒绝
+        """
+        try:
+            symbol = signal.get('symbol', '')
+            signal_type = signal.get('type', '')
+            price = signal.get('price', 0.0)
+            position_size = signal.get('position_size_usdt', self.per_order_size)
+            
+            # 1. 检查日亏损限制
+            if self.daily_pnl <= -self.max_daily_loss:
+                trading_logger.warning(f"风险检查失败: 达到日亏损限制 {self.daily_pnl}% >= {self.max_daily_loss}%")
+                return False
+            
+            # 2. 检查仓位大小限制
+            if position_size > self.per_order_size:
+                trading_logger.warning(f"风险检查失败: 仓位大小 {position_size} USDT 超过限制 {self.per_order_size} USDT")
+                return False
+                
+            # 3. 检查最小仓位限制
+            if position_size < 10:  # 通用最小限制
+                trading_logger.warning(f"风险检查失败: 仓位大小 {position_size} USDT 小于最小要求 10 USDT")
+                return False
+            
+            # 4. 检查当前持仓数量（如果是开仓信号）
+            if signal_type in ['OPEN_LONG', 'OPEN_SHORT']:
+                current_orders_count = len(self.positions.get(symbol, []))
+                max_orders_per_symbol = 5  # 可以从配置中读取
+                
+                if current_orders_count >= max_orders_per_symbol:
+                    trading_logger.warning(f"风险检查失败: {symbol} 已达到最大订单数量 {max_orders_per_symbol}")
+                    return False
+            
+            # 5. 验证价格数据
+            if price <= 0:
+                trading_logger.warning(f"风险检查失败: 无效价格 {price}")
+                return False
+                
+            # 6. 检查符号是否有效
+            if not symbol or not signal_type:
+                trading_logger.warning("风险检查失败: 无效的信号数据")
+                return False
+            
+            trading_logger.info(f"风险检查通过: {symbol} {signal_type} @ {price}")
+            return True
+            
+        except Exception as e:
+            trading_logger.error(f"风险检查过程中发生错误: {e}", exc_info=True)
+            return False 

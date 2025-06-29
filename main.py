@@ -75,7 +75,7 @@ class CryptoPulseTrader:
             
             # 4. 初始化市场扫描器 (传入数据队列)
             self.market_scanner = MarketScanner(
-                config=self.config_manager.config,
+                config=self.config_manager,  # 传递ConfigManager对象，不是字典
                 testnet=self.config_manager.config.get('exchange', {}).get('testnet', True),
                 data_queue=self.data_queue  # 重要：传入数据队列
             )

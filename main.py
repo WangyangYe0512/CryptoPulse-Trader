@@ -5,7 +5,6 @@ CryptoPulse Trader 主程序
 
 import signal
 import sys
-import time
 from datetime import datetime
 import threading
 import asyncio
@@ -69,20 +68,30 @@ class CryptoPulseTrader:
             self.notification_manager = NotificationManager(self.config_manager)
             trading_logger.info("通知管理器初始化成功")
             
-            # 3. 初始化市场扫描器
+            # 3. 创建数据队列用于WebSocket数据传递
+            import asyncio
+            self.data_queue = asyncio.Queue()
+            trading_logger.info("数据队列初始化成功")
+            
+            # 4. 初始化市场扫描器 (传入数据队列)
             self.market_scanner = MarketScanner(
                 config=self.config_manager.config,
-                testnet=self.config_manager.config.get('exchange', {}).get('testnet', True)
+                testnet=self.config_manager.config.get('exchange', {}).get('testnet', True),
+                data_queue=self.data_queue  # 重要：传入数据队列
             )
             
-            # 4. 初始化交易执行器
+            # 5. 初始化交易执行器
             self.executor = Trader(self.config_manager)
             
-            # 5. 设置扫描器的执行器
+            # 6. 设置扫描器的执行器
             self.market_scanner.set_executor(self.executor)
             
-            # 6. 初始化风险管理器
+            # 7. 初始化风险管理器
             self.risk_manager = RiskManager(self.config_manager)
+            
+            # 8. 获取扫描器的策略实例，用于实时信号处理
+            self.strategy = self.market_scanner.strategy
+            trading_logger.info("策略实例获取成功")
             
             trading_logger.info("核心交易组件初始化成功")
             
@@ -144,40 +153,119 @@ class CryptoPulseTrader:
             self.error_stats['notification_errors'] += 1
     
     def _run_main_loop(self):
-        """运行主循环"""
+        """运行主循环 - 支持实时数据处理"""
         scan_interval = self.config_manager.config.get('trading', {}).get('scan_interval', 3600)  # 默认1小时
         
         trading_logger.info(f"主循环已启动，扫描间隔: {scan_interval}秒")
         
+        # 🚀 启动异步事件循环来处理实时数据和定时任务
+        asyncio.run(self._run_async_main_loop(scan_interval))
+    
+    async def _run_async_main_loop(self, scan_interval):
+        """异步主循环 - 同时处理定时任务和实时数据"""
+        trading_logger.info("🚀 启动异步主循环，支持实时数据处理")
+        
+        # 创建任务
+        tasks = []
+        
+        # 1. 定时交易周期任务
+        trading_cycle_task = asyncio.create_task(self._periodic_trading_cycle(scan_interval))
+        tasks.append(trading_cycle_task)
+        
+        # 2. 实时数据处理任务
+        data_processing_task = asyncio.create_task(self._process_realtime_data())
+        tasks.append(data_processing_task)
+        
+        try:
+            # 等待所有任务完成（或被中断）
+            await asyncio.gather(*tasks)
+        except KeyboardInterrupt:
+            trading_logger.info("收到中断信号，正在停止异步任务...")
+            for task in tasks:
+                task.cancel()
+        except Exception as e:
+            trading_logger.error(f"异步主循环发生错误: {e}", exc_info=True)
+        finally:
+            trading_logger.info("异步主循环已停止")
+    
+    async def _periodic_trading_cycle(self, scan_interval):
+        """定时交易周期任务"""
         while self.is_running:
             try:
-                cycle_start_time = time.time()
+                cycle_start_time = asyncio.get_event_loop().time()
                 
                 # 执行一个交易周期
-                asyncio.run(self._execute_trading_cycle())
+                await self._execute_trading_cycle()
                 
                 # 计算执行时间
-                cycle_duration = time.time() - cycle_start_time
+                cycle_duration = asyncio.get_event_loop().time() - cycle_start_time
                 trading_logger.info(f"交易周期完成，耗时: {cycle_duration:.2f}秒")
                 
-                # 等待下一个周期（扣除执行时间）
+                # 等待下一个周期
                 sleep_time = max(0, scan_interval - cycle_duration)
                 if sleep_time > 0:
                     trading_logger.info(f"等待 {sleep_time:.0f} 秒后开始下一个周期")
-                    time.sleep(sleep_time)
+                    await asyncio.sleep(sleep_time)
                 
-            except KeyboardInterrupt:
-                trading_logger.info("收到中断信号")
+            except asyncio.CancelledError:
+                trading_logger.info("定时交易周期任务被取消")
                 break
             except Exception as e:
-                trading_logger.error(f"主循环发生错误: {e}", exc_info=True)
+                trading_logger.error(f"定时交易周期发生错误: {e}", exc_info=True)
                 self.error_stats['critical_errors'] += 1
+                self._safe_notify_error("Trading Cycle Error", str(e))
+                await asyncio.sleep(60)  # 短暂休息
+    
+    async def _process_realtime_data(self):
+        """处理来自WebSocket的实时数据"""
+        trading_logger.info("🔄 开始处理WebSocket实时数据流...")
+        
+        while self.is_running:
+            try:
+                # 从队列中获取ticker数据（1秒超时）
+                ticker_data = await asyncio.wait_for(self.data_queue.get(), timeout=1.0)
                 
-                # 发送错误通知（非阻塞）
-                self._safe_notify_error("Main Loop Error", str(e))
+                # 📊 处理ticker数据
+                await self._handle_ticker_data(ticker_data)
                 
-                # 短暂休息后继续
-                time.sleep(60)
+                # 标记任务完成
+                self.data_queue.task_done()
+                
+            except asyncio.TimeoutError:
+                # 超时是正常的，继续循环
+                continue
+            except asyncio.CancelledError:
+                trading_logger.info("实时数据处理任务被取消")
+                break
+            except Exception as e:
+                trading_logger.error(f"处理实时数据时发生错误: {e}", exc_info=True)
+                self.error_stats['critical_errors'] += 1
+                await asyncio.sleep(1)  # 短暂休息
+    
+    async def _handle_ticker_data(self, ticker_data):
+        """处理单个ticker数据并生成交易信号"""
+        try:
+            symbol = ticker_data['symbol']
+            price = ticker_data['close']
+            
+            # 📈 使用策略分析市场数据
+            signal = self.strategy.analyze_market(ticker_data)
+            
+            if signal:
+                # 🎯 生成了交易信号！
+                trading_logger.info(f"🎯 策略生成信号: {signal['type']} {signal['symbol']} @{signal['price']}")
+                
+                # 执行风险检查
+                approved_signals = self._execute_risk_check([signal])
+                
+                if approved_signals:
+                    # 执行交易
+                    self._execute_trades(approved_signals)
+                else:
+                    trading_logger.info(f"信号被风险管理器拒绝: {signal['symbol']}")
+            
+        except Exception as e:
+            trading_logger.error(f"处理ticker数据失败 {ticker_data.get('symbol', 'unknown')}: {e}", exc_info=True)
     
     async def _execute_trading_cycle(self):
         """执行一个完整的交易周期"""

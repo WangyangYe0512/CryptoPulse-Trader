@@ -497,13 +497,16 @@ class WebSocketMarketScanner:
         """处理从WebSocket接收到的消息 - 改为处理ticker数据"""
         try:
             data = json.loads(message)
-            trading_logger.debug(f"收到WebSocket消息: {data}")  # 调整为debug级别
+            if data.get('e') == '24hrTicker':
+                trading_logger.info(f"📊 收到Ticker消息: {data['s']} 价格={data['c']}")
+            else:
+                trading_logger.debug(f"收到WebSocket消息: {data}")  # 非ticker消息保持debug级别
 
             # 处理ticker数据（实时价格更新）
             if 'e' in data and data['e'] == '24hrTicker':
                 ticker_data = data
                 symbol = ticker_data['s']
-                trading_logger.debug(f"Processing ticker for symbol: {symbol}. Current watchlist: {self.watchlist}")
+                trading_logger.info(f"📈 Processing ticker for symbol: {symbol}. Current watchlist size: {len(self.watchlist)}")
 
                 # 🛡️ 验证接收到的ticker符号是否有效
                 if self.symbol_validator:
@@ -540,16 +543,16 @@ class WebSocketMarketScanner:
                     'data_source': 'ticker_stream'
                 }
                 
-                trading_logger.debug(f"处理后Ticker for {symbol}: Price={processed_ticker['close']}, "
+                trading_logger.info(f"💰 处理后Ticker for {symbol}: Price={processed_ticker['close']}, "
                                   f"24hChange={processed_ticker['price_change']:+.2f}%, "
-                                  f"Volume={processed_ticker['volume']}, Count={processed_ticker['count']}")
+                                  f"Volume={processed_ticker['volume']}")
                 
                 if self.data_queue:
-                    trading_logger.debug(f"Attempting to put processed ticker for {symbol} onto data_queue.")
+                    trading_logger.info(f"📤 Sending ticker data for {symbol} to strategy (queue size: {self.data_queue.qsize()})")
                     await self.data_queue.put(processed_ticker)
-                    trading_logger.debug(f"Successfully put processed ticker for {symbol} onto data_queue. Queue size: {self.data_queue.qsize()}")
+                    trading_logger.info(f"✅ Successfully sent {symbol} ticker to strategy")
                 else:
-                    trading_logger.warning("Data queue not available in WebSocketMarketScanner to send ticker data.")
+                    trading_logger.warning("⚠️ Data queue not available - ticker data cannot reach strategy!")
 
                 # 更新Ticker缓存
                 self.ticker_cache[symbol] = processed_ticker

@@ -30,7 +30,7 @@ class CryptoPulseTrader:
         self.config_manager = None
         self.notification_manager = None  # 非关键组件，故障时可以继续运行
         self.market_scanner = None
-        self.trend_analyzer = None
+        # trend_analyzer已移除 - 现在完全使用实时ticker流进行交易分析
         self.executor = None
         self.risk_manager = None
         
@@ -189,31 +189,32 @@ class CryptoPulseTrader:
             trading_logger.info("异步主循环已停止")
     
     async def _periodic_trading_cycle(self, scan_interval):
-        """定时交易周期任务"""
+        """定时交易周期任务 - 现在主要用于维护watchlist"""
         while self.is_running:
             try:
                 cycle_start_time = asyncio.get_event_loop().time()
                 
-                # 执行一个交易周期
-                await self._execute_trading_cycle()
+                # 只执行市场扫描来更新watchlist，不执行交易信号分析
+                # 交易信号完全由实时ticker数据流处理
+                await self._execute_market_scan()
                 
                 # 计算执行时间
                 cycle_duration = asyncio.get_event_loop().time() - cycle_start_time
-                trading_logger.info(f"交易周期完成，耗时: {cycle_duration:.2f}秒")
+                trading_logger.info(f"Watchlist更新周期完成，耗时: {cycle_duration:.2f}秒")
                 
                 # 等待下一个周期
                 sleep_time = max(0, scan_interval - cycle_duration)
                 if sleep_time > 0:
-                    trading_logger.info(f"等待 {sleep_time:.0f} 秒后开始下一个周期")
+                    trading_logger.info(f"等待 {sleep_time:.0f} 秒后开始下一个Watchlist更新周期")
                     await asyncio.sleep(sleep_time)
                 
             except asyncio.CancelledError:
-                trading_logger.info("定时交易周期任务被取消")
+                trading_logger.info("定时Watchlist更新任务被取消")
                 break
             except Exception as e:
-                trading_logger.error(f"定时交易周期发生错误: {e}", exc_info=True)
+                trading_logger.error(f"定时Watchlist更新发生错误: {e}", exc_info=True)
                 self.error_stats['critical_errors'] += 1
-                self._safe_notify_error("Trading Cycle Error", str(e))
+                self._safe_notify_error("Watchlist Update Error", str(e))
                 await asyncio.sleep(60)  # 短暂休息
     
     async def _process_realtime_data(self):
@@ -267,38 +268,8 @@ class CryptoPulseTrader:
         except Exception as e:
             trading_logger.error(f"处理ticker数据失败 {ticker_data.get('symbol', 'unknown')}: {e}", exc_info=True)
     
-    async def _execute_trading_cycle(self):
-        """执行一个完整的交易周期"""
-        try:
-            trading_logger.info("开始新的交易周期")
-            self.system_status['total_scans'] += 1
-            self.system_status['last_scan_time'] = datetime.now()
-            
-            # 1. 市场扫描（关键步骤）
-            candidates = await self._execute_market_scan()
-            if not candidates:
-                trading_logger.info("未发现交易候选")
-                return
-            
-            # 2. 趋势分析（关键步骤）
-            signals = self._execute_trend_analysis(candidates)
-            if not signals:
-                trading_logger.info("未产生交易信号")
-                return
-            
-            # 3. 风险检查（关键步骤）
-            approved_signals = self._execute_risk_check(signals)
-            if not approved_signals:
-                trading_logger.info("所有信号被风险管理器拒绝")
-                return
-            
-            # 4. 执行交易（关键步骤）
-            await self._execute_trades(approved_signals)
-            
-        except Exception as e:
-            trading_logger.error(f"交易周期执行失败: {e}", exc_info=True)
-            self.error_stats['critical_errors'] += 1
-            self._safe_notify_error("Trading Cycle Error", str(e))
+    # 注意：这个方法已被移除，因为现在完全使用实时ticker流进行交易信号分析
+    # 定时任务现在只负责更新watchlist，交易信号由_handle_ticker_data处理
     
     async def _execute_market_scan(self):
         """执行市场扫描"""
@@ -324,30 +295,7 @@ class CryptoPulseTrader:
             self._safe_notify_error("Market Scan Error", str(e))
             return []
     
-    def _execute_trend_analysis(self, candidates):
-        """执行趋势分析"""
-        try:
-            trading_logger.info(f"对 {len(candidates)} 个候选币种执行趋势分析...")
-            
-            signals = []
-            for candidate in candidates:
-                try:
-                    signal = self.trend_analyzer.analyze_trend(candidate)
-                    if signal:
-                        signals.append(signal)
-                        trading_logger.info(f"生成信号: {signal.get('symbol')} - {signal.get('direction')}")
-                except Exception as e:
-                    trading_logger.warning(f"分析 {candidate.get('symbol')} 时失败: {e}")
-                    continue
-            
-            trading_logger.info(f"趋势分析完成，生成 {len(signals)} 个交易信号")
-            return signals
-            
-        except Exception as e:
-            trading_logger.error(f"趋势分析失败: {e}", exc_info=True)
-            self.error_stats['scan_errors'] += 1
-            self._safe_notify_error("Trend Analysis Error", str(e))
-            return []
+    # 注意：这个方法已被移除，现在趋势分析完全由实时ticker流中的策略处理
     
     def _execute_risk_check(self, signals):
         """执行风险检查"""

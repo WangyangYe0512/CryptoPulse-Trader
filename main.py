@@ -339,7 +339,7 @@ class CryptoPulseTrader:
                     result = await self.executor.execute_signal(signal)
                     trade_results.append(result)
                     
-                    if result.get('success'):
+                    if result.get('status') == 'success':
                         self.system_status['successful_trades'] += 1
                         trading_logger.info(f"交易成功: {result}")
                         
@@ -361,7 +361,7 @@ class CryptoPulseTrader:
                     self._safe_notify_error("Trade Execution Error", f"{signal.get('symbol')}: {str(e)}")
                     continue
             
-            trading_logger.info(f"交易执行完成，成功: {len([r for r in trade_results if r.get('success')])}, 失败: {len([r for r in trade_results if not r.get('success')])}")
+            trading_logger.info(f"交易执行完成，成功: {len([r for r in trade_results if r.get('status') == 'success'])}, 失败: {len([r for r in trade_results if r.get('status') != 'success'])}")
             
         except Exception as e:
             trading_logger.error(f"交易执行失败: {e}", exc_info=True)

@@ -375,17 +375,22 @@ class RiskManager:
                 trading_logger.warning(f"风险检查失败: 达到日亏损限制 {self.daily_pnl}% >= {self.max_daily_loss}%")
                 return False
             
-            # 2. 检查仓位大小限制
+            # 2. 对于平仓信号，豁免仓位大小和订单数量检查
+            if signal_type in ['CLOSE_LONG_POSITIONS', 'CLOSE_SHORT_POSITIONS']:
+                trading_logger.info(f"平仓信号检查通过: {symbol} {signal_type} @ {price}")
+                return True
+            
+            # 3. 检查仓位大小限制（仅对开仓信号）
             if position_size > self.per_order_size:
                 trading_logger.warning(f"风险检查失败: 仓位大小 {position_size} USDT 超过限制 {self.per_order_size} USDT")
                 return False
                 
-            # 3. 检查最小仓位限制
+            # 4. 检查最小仓位限制（仅对开仓信号）
             if position_size < 10:  # 通用最小限制
                 trading_logger.warning(f"风险检查失败: 仓位大小 {position_size} USDT 小于最小要求 10 USDT")
                 return False
             
-            # 4. 检查当前持仓数量（如果是开仓信号）
+            # 5. 检查当前持仓数量（如果是开仓信号）
             if signal_type in ['OPEN_LONG', 'OPEN_SHORT']:
                 current_orders_count = len(self.positions.get(symbol, []))
                 max_orders_per_symbol = 5  # 可以从配置中读取
@@ -394,12 +399,12 @@ class RiskManager:
                     trading_logger.warning(f"风险检查失败: {symbol} 已达到最大订单数量 {max_orders_per_symbol}")
                     return False
             
-            # 5. 验证价格数据
+            # 6. 验证价格数据
             if price <= 0:
                 trading_logger.warning(f"风险检查失败: 无效价格 {price}")
                 return False
                 
-            # 6. 检查符号是否有效
+            # 7. 检查符号是否有效
             if not symbol or not signal_type:
                 trading_logger.warning("风险检查失败: 无效的信号数据")
                 return False

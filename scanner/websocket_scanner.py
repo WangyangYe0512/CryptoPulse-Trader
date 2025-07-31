@@ -653,11 +653,32 @@ class WebSocketMarketScanner:
                     max_failure_count=self.max_failure_count
                 )
                 
-                # 检查排名阈值
+                # 检查排名阈值 - 但排除活跃持仓币种
                 ranking_based_removals = self.strategy.get_symbols_by_ranking_threshold(
                     ranking_threshold=self.ranking_threshold
                 )
-                symbols_to_remove.extend(ranking_based_removals)
+                
+                # 获取当前活跃持仓币种
+                active_positions_symbols = set()
+                if self.executor and hasattr(self.executor, 'get_active_positions_symbols'):
+                    try:
+                        active_positions_raw = await self.executor.get_active_positions_symbols()
+                        # 转换为watchlist格式 (BTCUSDT)
+                        active_positions_symbols = {s.replace('/', '') for s in active_positions_raw}
+                        trading_logger.info(f"活跃持仓币种 (用于保护): {active_positions_symbols}")
+                    except Exception as e:
+                        trading_logger.error(f"获取活跃持仓时出错: {e}")
+                
+                # 过滤排名移除列表：保留有活跃持仓的币种
+                filtered_ranking_removals = []
+                for symbol in ranking_based_removals:
+                    if symbol not in active_positions_symbols:
+                        filtered_ranking_removals.append(symbol)
+                        trading_logger.info(f"[{symbol}] 排名过低，将被移除 (无活跃持仓)")
+                    else:
+                        trading_logger.info(f"[{symbol}] 排名过低但有活跃持仓，保留在watchlist中")
+                
+                symbols_to_remove.extend(filtered_ranking_removals)
                 
                 # 从watchlist和策略中移除
                 for symbol in symbols_to_remove:
@@ -667,6 +688,8 @@ class WebSocketMarketScanner:
                     self.strategy.remove_symbol(symbol)
                 
                 trading_logger.info(f"Dynamic management removed {len(symbols_to_remove)} symbols: {symbols_to_remove}")
+                if filtered_ranking_removals:
+                    trading_logger.info(f"Ranking-based removals (filtered): {len(filtered_ranking_removals)} symbols")
 
             # 1. Get volatile symbols (base format like 'BTC', 'ETH')
             gainers, losers = await self.fetch_coingecko_movers()

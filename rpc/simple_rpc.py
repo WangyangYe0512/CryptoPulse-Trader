@@ -513,13 +513,21 @@ class RPC:
                             'est_stake': total, 'est_stake_bot': total,
                         }]
                         
-                        return {
+                        result = {
                             'currencies': currencies, 'total': total, 'total_bot': total,
                             'symbol': stake_currency, 'value': total, 'value_bot': total,
                             'stake': stake_currency, 'starting_capital': total,
                             'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
                             'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self._trades),
                         }
+                        
+                        # 确保关闭executor连接
+                        try:
+                            loop.run_until_complete(executor.close())
+                        except Exception:
+                            pass
+                        
+                        return result
                     except RuntimeError:
                         # 如果没有事件循环，创建一个新的
                         balance_data = asyncio.run(executor.get_account_balance())
@@ -538,13 +546,21 @@ class RPC:
                             'est_stake': total, 'est_stake_bot': total,
                         }]
                         
-                        return {
+                        result = {
                             'currencies': currencies, 'total': total, 'total_bot': total,
                             'symbol': stake_currency, 'value': total, 'value_bot': total,
                             'stake': stake_currency, 'starting_capital': total,
                             'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
                             'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self._trades),
                         }
+                        
+                        # 确保关闭executor连接
+                        try:
+                            asyncio.run(executor.close())
+                        except Exception:
+                            pass
+                        
+                        return result
             
             # 如果没有执行器，返回默认值
             total = 0.0
@@ -564,7 +580,10 @@ class RPC:
                 'error': 'No executor available'
             }
         except Exception as e:
-            logger.error(f"Error getting balance: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            logger.error(f"Error getting balance: {type(e).__name__}: {e}")
+            logger.error(f"Balance error details:\n{error_details}")
             total = 0.0
             currencies = [{
                 'currency': stake_currency,
@@ -579,7 +598,7 @@ class RPC:
                 'stake': stake_currency, 'starting_capital': total,
                 'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
                 'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self._trades),
-                'error': str(e)
+                'error': f"{type(e).__name__}: {e}"
             }
     
     def _rpc_profit(self, stake_currency: str = "USDT", fiat_display_currency: str = "USD") -> Dict[str, Any]:
@@ -601,7 +620,7 @@ class RPC:
                         total_pnl = profit_data.get('total_pnl', 0.0)
                         total_asset_value = profit_data.get('total_asset_value', 0.0)
                         
-                        return {
+                        result = {
                             'profit_closed_coin': realized_pnl,
                             'profit_closed_fiat': realized_pnl,
                             'profit_closed_ratio': (realized_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
@@ -622,6 +641,14 @@ class RPC:
                             'unrealized_pnl': unrealized_pnl,
                             'total_asset_value': total_asset_value,
                         }
+                        
+                        # 确保关闭executor连接
+                        try:
+                            loop.run_until_complete(executor.close())
+                        except Exception:
+                            pass
+                        
+                        return result
                     except RuntimeError:
                         # 如果没有事件循环，创建一个新的
                         profit_data = asyncio.run(executor.get_profit_loss_summary())
@@ -632,7 +659,7 @@ class RPC:
                         total_pnl = profit_data.get('total_pnl', 0.0)
                         total_asset_value = profit_data.get('total_asset_value', 0.0)
                         
-                        return {
+                        result = {
                             'profit_closed_coin': realized_pnl,
                             'profit_closed_fiat': realized_pnl,
                             'profit_closed_ratio': (realized_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
@@ -653,6 +680,14 @@ class RPC:
                             'unrealized_pnl': unrealized_pnl,
                             'total_asset_value': total_asset_value,
                         }
+                        
+                        # 确保关闭executor连接
+                        try:
+                            asyncio.run(executor.close())
+                        except Exception:
+                            pass
+                        
+                        return result
             
             # 如果没有执行器，返回默认值
             return {
@@ -678,7 +713,10 @@ class RPC:
                 'error': 'No executor available'
             }
         except Exception as e:
-            logger.error(f"Error getting profit: {e}")
+            import traceback
+            error_details = traceback.format_exc()
+            logger.error(f"Error getting profit: {type(e).__name__}: {e}")
+            logger.error(f"Profit error details:\n{error_details}")
             return {
                 'profit_closed_coin': 0.0,
                 'profit_closed_fiat': 0.0,
@@ -699,5 +737,5 @@ class RPC:
                 'win_rate': 0.0,
                 'unrealized_pnl': 0.0,
                 'total_asset_value': 0.0,
-                'error': str(e)
+                'error': f"{type(e).__name__}: {e}"
             }

@@ -17,7 +17,6 @@ from sqlalchemy import func, select
 
 from rpc.constants import __version__, Config
 from rpc.enums import MarketDirection, SignalDirection, State, TradingMode
-)
 from freqtrade.exceptions import ExchangeError, PricingError
 from freqtrade.exchange import Exchange, timeframe_to_minutes, timeframe_to_msecs
 from freqtrade.exchange.exchange_utils import price_to_precision
@@ -72,7 +71,7 @@ class RPCHandler:
         :return: None
         """
         self._rpc = rpc
-        self._config: Config = config
+        self._config: Config = config   
 
     @property
     def name(self) -> str:

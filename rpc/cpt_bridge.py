@@ -150,6 +150,27 @@ class CPTRPCBridge:
             'open_trade_count': len(open_trades),
             'closed_trade_count': len(closed_trades)
         }
+    
+    def get_trading_stats(self) -> Dict[str, Any]:
+        """获取交易统计信息"""
+        open_trades = self.get_open_trades()
+        closed_trades = self.get_closed_trades()
+        
+        # 计算胜负统计
+        winning_trades = len([t for t in closed_trades if (t.profit_abs or 0) > 0])
+        losing_trades = len([t for t in closed_trades if (t.profit_abs or 0) <= 0])
+        
+        # 计算总盈亏
+        total_profit = sum(t.profit_abs or 0 for t in closed_trades)
+        
+        return {
+            'open_trades_count': len(open_trades),
+            'closed_trades_count': len(closed_trades),
+            'winning_trades': winning_trades,
+            'losing_trades': losing_trades,
+            'total_profit': total_profit,
+            'win_rate': (winning_trades / len(closed_trades)) if closed_trades else 0.0
+        }
     def create_trade_from_signal(self, signal: Dict[str, Any]) -> Trade:
         """从交易信号创建真实交易记录"""
         trade_id = self._trade_id_counter
@@ -218,6 +239,19 @@ class CPTRPCBridge:
         return {
             'type': RPCMessageType.STATUS,
             'status': message,  # 注意：这里应该是消息内容，不是状态
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }
+    
+    def create_rpc_strategy_msg(self, message: str) -> Dict[str, Any]:
+        """创建策略消息（用于发送一般信息/错误提示）"""
+        try:
+            from rpc.enums import RPCMessageType
+            msg_type = getattr(RPCMessageType, 'STRATEGY', 'strategy')
+        except Exception:
+            msg_type = 'strategy'
+        return {
+            'type': msg_type,
+            'message': message,
             'timestamp': datetime.now(timezone.utc).isoformat()
         }
         

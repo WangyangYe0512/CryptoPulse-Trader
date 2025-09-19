@@ -445,8 +445,83 @@ class EnhancedTelegramIntegration:
         # 重新实现 _rpc_profit 以显示盈亏统计
         def _rpc_profit_patched(stake_currency: str = None, fiat_display_currency: str = None, 
                                trade_ids: list = None):
-            stats = self.bridge.get_trading_stats()
-            closed_trades = self.bridge.get_closed_trades(100)
+            # 尝试使用桥接器的执行器获取真实盈亏数据
+            if hasattr(self.bridge, 'config_manager'):
+                executor = self.bridge.config_manager.get_executor()
+                if executor:
+                    try:
+                        import asyncio
+                        # 使用异步方法获取盈亏
+                        try:
+                            # 检查是否在事件循环中
+                            loop = asyncio.get_running_loop()
+                            # 如果已经在事件循环中，使用 ThreadPoolExecutor
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as executor_pool:
+                                future = executor_pool.submit(asyncio.run, executor.get_profit_loss_summary())
+                                profit_data = future.result(timeout=30)
+                        except RuntimeError:
+                            # 没有运行的事件循环，可以直接使用 asyncio.run
+                            profit_data = asyncio.run(executor.get_profit_loss_summary())
+                        finally:
+                            # 注意：不在这里关闭executor，因为它可能被其他地方使用
+                            pass
+                    
+                        # 转换为 freqtrade 格式
+                        unrealized_pnl = profit_data.get('unrealized_pnl', 0.0)
+                        realized_pnl = profit_data.get('realized_pnl', 0.0)
+                        total_pnl = profit_data.get('total_pnl', 0.0)
+                        total_asset_value = profit_data.get('total_asset_value', 0.0)
+                    
+                        # 获取交易统计
+                        try:
+                            stats = self.bridge.get_trading_stats()
+                        except AttributeError:
+                            # 如果方法不存在，使用默认值
+                            stats = {'winning_trades': 0, 'losing_trades': 0}
+                        
+                        try:
+                            closed_trades = self.bridge.get_closed_trades(100)
+                        except AttributeError:
+                            closed_trades = []
+                        
+                        return {
+                            'profit_closed_coin': realized_pnl,
+                            'profit_closed_fiat': realized_pnl,
+                            'profit_closed_ratio': (realized_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
+                            'profit_all_coin': total_pnl,
+                            'profit_all_fiat': total_pnl,
+                            'profit_all_ratio': (total_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
+                            'trade_count': len(closed_trades),
+                            'first_trade_date': closed_trades[-1].open_date if closed_trades else None,
+                            'latest_trade_date': closed_trades[0].close_date if closed_trades else None,
+                            'avg_duration': 0,
+                            'best_pair': None,
+                            'best_rate': 0.0,
+                            'worst_pair': None,
+                            'worst_rate': 0.0,
+                            'winning_trades': stats['winning_trades'],
+                            'losing_trades': stats['losing_trades'],
+                            'win_rate': 0.0,
+                            'unrealized_pnl': unrealized_pnl,
+                            'total_asset_value': total_asset_value,
+                        }
+                    except Exception as e:
+                        import traceback
+                        error_details = traceback.format_exc()
+                        trading_logger.error(f"Failed to get profit from executor: {type(e).__name__}: {e}")
+                        trading_logger.error(f"Profit error details:\n{error_details}")
+            
+            # 回退到原来的方法
+            try:
+                stats = self.bridge.get_trading_stats()
+            except AttributeError:
+                stats = {'winning_trades': 0, 'losing_trades': 0}
+            
+            try:
+                closed_trades = self.bridge.get_closed_trades(100)
+            except AttributeError:
+                closed_trades = []
             
             profit_closed_coin = sum(t.profit_abs or 0 for t in closed_trades)
             profit_closed_ratio_sum = sum(t.profit_ratio or 0 for t in closed_trades)
@@ -592,6 +667,63 @@ class EnhancedTelegramIntegration:
                 if cache_entry and (now - cache_entry.get('ts', 0)) <= self._balance_cache_ttl_seconds:
                     return cache_entry['data']
 
+                # 尝试使用桥接器的执行器获取真实数据
+                if hasattr(self.bridge, 'config_manager'):
+                    executor = self.bridge.config_manager.get_executor()
+                    if executor:
+                        try:
+                            import asyncio
+                            # 使用异步方法获取余额
+                            try:
+                                # 检查是否在事件循环中
+                                loop = asyncio.get_running_loop()
+                                # 如果已经在事件循环中，使用 ThreadPoolExecutor
+                                import concurrent.futures
+                                with concurrent.futures.ThreadPoolExecutor() as executor_pool:
+                                    future = executor_pool.submit(asyncio.run, executor.get_account_balance())
+                                    balance_data = future.result(timeout=30)
+                            except RuntimeError:
+                                # 没有运行的事件循环，可以直接使用 asyncio.run
+                                balance_data = asyncio.run(executor.get_account_balance())
+                            finally:
+                                # 确保关闭executor连接
+                                try:
+                                    asyncio.run(executor.close())
+                                except Exception:
+                                    pass
+                            
+                            # 转换为 freqtrade 格式
+                            usdt_balance = balance_data.get('USDT', {})
+                            total = usdt_balance.get('total', 0.0)
+                            free = usdt_balance.get('free', 0.0)
+                            used = usdt_balance.get('used', 0.0)
+                            
+                            currencies = [{
+                                'currency': stake_currency,
+                                'free': free, 'balance': total, 'used': used,
+                                'bot_owned': total, 'stake': stake_currency,
+                                'is_position': False, 'is_bot_managed': True,
+                                'est_stake': total, 'est_stake_bot': total,
+                            }]
+                            
+                            result = {
+                                'currencies': currencies, 'total': total, 'total_bot': total,
+                                'symbol': stake_currency, 'value': total, 'value_bot': total,
+                                'stake': stake_currency, 'starting_capital': total,
+                                'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
+                                'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self.bridge.trades),
+                            }
+                            
+                            # 缓存真实数据
+                            self._balance_cache[cache_key] = {'data': result, 'ts': now}
+                            return result
+                        except Exception as e:
+                            import traceback
+                            error_details = traceback.format_exc()
+                            trading_logger.error(f"Failed to get balance from executor: {type(e).__name__}: {e}")
+                            trading_logger.error(f"Balance error details:\n{error_details}")
+                
+                # 回退到原来的方法
                 ex = self._get_private_exchange()
                 if not ex:
                     # 回退到假数据
@@ -891,29 +1023,125 @@ class EnhancedTelegramIntegration:
                         'profit': 0.0,
                     }
 
-                # 执行平仓：发送相反方向的市价单
-                contracts = abs(float(target_position.get('contracts', 0)))
-                side = 'sell' if float(target_position.get('contracts', 0)) > 0 else 'buy'
-                
-                # 发送市价平仓单（先尝试带 reduceOnly，失败则不带）
-                close_order = None
+                # 执行平仓：发送相反方向的市价单（增强：取消挂单、数量对齐、reduceOnly、positionSide、分批平仓）
+                raw_contracts = float(target_position.get('contracts', 0) or 0)
+                contracts = abs(raw_contracts)
+                side = 'sell' if raw_contracts > 0 else 'buy'
+
+                # 读取positionSide（在双向持仓/对冲模式下必需）
+                pos_side = (target_position.get('info', {}) or {}).get('positionSide')
+                if not pos_side:
+                    pos_side = 'LONG' if raw_contracts > 0 else 'SHORT'
+
+                # 1) 取消该symbol的未成交订单，释放保证金
                 try:
-                    close_order = ex.create_market_order(
-                        symbol=ccxt_symbol,
-                        side=side,
-                        amount=contracts,
-                        params={'reduceOnly': True}  # 仅平仓
-                    )
-                except Exception:
                     try:
-                        # 回退：不使用 reduceOnly
-                        close_order = ex.create_market_order(
-                            symbol=ccxt_symbol,
-                            side=side,
-                            amount=contracts
-                        )
-                    except Exception as e2:
-                        raise e2
+                        ex.cancel_all_orders(ccxt_symbol)
+                    except Exception:
+                        # 回退：逐个取消
+                        open_orders = ex.fetch_open_orders(symbol=ccxt_symbol)
+                        for od in open_orders:
+                            try:
+                                ex.cancel_order(od.get('id'), symbol=ccxt_symbol)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+
+                # 2) 对齐数量到交易所步长/最小数量
+                try:
+                    ex.load_markets()
+                except Exception:
+                    pass
+                try:
+                    market = ex.market(ccxt_symbol)
+                except Exception:
+                    market = None
+
+                def align_amount(amount: float) -> float:
+                    try:
+                        if amount <= 0:
+                            return 0.0
+                        amt = amount
+                        try:
+                            amt = float(ex.amount_to_precision(ccxt_symbol, amt))
+                        except Exception:
+                            pass
+                        if market and market.get('limits') and market['limits'].get('amount'):
+                            min_amt = float(market['limits']['amount'].get('min') or 0.0)
+                            if min_amt and amt < min_amt:
+                                return 0.0
+                        return max(0.0, amt)
+                    except Exception:
+                        return amount
+
+                amount_to_close = align_amount(contracts)
+                if amount_to_close <= 0:
+                    # 无可平数量
+                    close_price = trade.open_rate
+                    updated_trade = self.bridge.update_trade_on_close(trade_id_int, close_price, 'zero_amount')
+                    return {
+                        'status': '持仓数量过小，视为已关闭',
+                        'trade_id': trade_id_int,
+                        'pair': trade.pair,
+                        'profit': updated_trade.profit_abs,
+                    }
+
+                # 3) 优先使用 closePosition=True（不需额外保证金），再退化到 reduceOnly + 数量
+                # 检测是否对冲模式
+                hedge_mode = None
+                try:
+                    info = ex.fapiPrivateGetPositionSideDual()
+                    hedge_mode = bool((info or {}).get('dualSidePosition'))
+                except Exception:
+                    pass
+
+                params_base = {'reduceOnly': True}
+                if hedge_mode:
+                    params_base['positionSide'] = pos_side
+
+                close_order = None
+                # 3.1 先尝试 closePosition=True（全平）
+                try:
+                    params_close = dict(params_base)
+                    params_close['closePosition'] = True
+                    close_order = ex.create_order(symbol=ccxt_symbol, type='market', side=side, amount=None, params=params_close)
+                except Exception:
+                    # 3.2 退化到 reduceOnly 按数量平
+                    def place_market(amount: float):
+                        return ex.create_market_order(symbol=ccxt_symbol, side=side, amount=amount, params=params_base)
+                    try:
+                        close_order = place_market(amount_to_close)
+                    except Exception:
+                        # 3.3 再次取消挂单并分批
+                        try:
+                            ex.cancel_all_orders(ccxt_symbol)
+                        except Exception:
+                            pass
+                        parts = [0.5, 0.25, 0.15, 0.10]
+                        remaining = amount_to_close
+                        executed_orders = []
+                        for p in parts:
+                            if remaining <= 0:
+                                break
+                            amt = align_amount(remaining * p)
+                            if amt <= 0:
+                                continue
+                            try:
+                                o = place_market(amt)
+                                executed_orders.append(o)
+                                remaining = max(0.0, remaining - amt)
+                            except Exception:
+                                continue
+                        if executed_orders and remaining <= 0.0000001:
+                            close_order = executed_orders[-1]
+                        else:
+                            # 3.4 最后退化：不带 reduceOnly，但在对冲模式下保留 positionSide
+                            try:
+                                params2 = {'positionSide': pos_side} if hedge_mode else {}
+                                close_order = ex.create_market_order(symbol=ccxt_symbol, side=side, amount=amount_to_close, params=params2)
+                            except Exception as e3:
+                                raise e3
                 
                 # 确保订单不为空
                 if not close_order:

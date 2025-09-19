@@ -38,6 +38,25 @@ class BinanceExecutor:
         
         self.markets_loaded = False
         trading_logger.info("BinanceExecutor (CCXT) initialized with 30s timeout and enhanced stability settings.")
+    
+    async def close(self):
+        """关闭交易所连接，释放资源"""
+        try:
+            if hasattr(self.exchange, 'close'):
+                await self.exchange.close()
+                trading_logger.info("BinanceExecutor connection closed successfully")
+        except Exception as e:
+            trading_logger.warning(f"Error closing BinanceExecutor: {e}")
+    
+    def __del__(self):
+        """析构函数，确保资源被释放"""
+        try:
+            if hasattr(self, 'exchange') and hasattr(self.exchange, 'close'):
+                # 注意：这里不能使用 await，因为 __del__ 不是 async
+                # 实际的清理应该在 close() 方法中进行
+                pass
+        except Exception:
+            pass
         
     async def ensure_markets_loaded(self, reload_if_needed=False):
         if not self.markets_loaded or reload_if_needed:
@@ -376,9 +395,38 @@ class BinanceExecutor:
             tp_percentage = self.config.get('trading.order.take_profit_percentage', 2.0) 
 
             trading_logger.info(f"Placing MARKET LONG order for {formatted_quantity} {ccxt_symbol} at ~{current_price}")
-            
-            # 创建订单（逐仓模式已在前面设置）
-            entry_order = await self.exchange.create_order(ccxt_symbol, 'market', 'buy', formatted_quantity)
+
+            # 识别是否为对冲模式，设置 positionSide
+            order_params = {}
+            try:
+                hedge_info = await self.exchange.fapiPrivateGetPositionSideDual()
+                hedge_mode = bool((hedge_info or {}).get('dualSidePosition'))
+            except Exception:
+                hedge_mode = False
+            if hedge_mode:
+                order_params['positionSide'] = 'LONG'
+
+            # 按不足保证金回退为分批下单
+            entry_order = None
+            try:
+                entry_order = await self.exchange.create_order(ccxt_symbol, 'market', 'buy', formatted_quantity, params=order_params)
+            except Exception as e_first:
+                # 尝试逐步降低下单数量
+                reduce_steps = [0.7, 0.5, 0.3, 0.2]
+                remaining_qty = formatted_quantity
+                for r in reduce_steps:
+                    try:
+                        qty = self.format_quantity(ccxt_symbol, remaining_qty * r)
+                        if not qty or qty <= 0:
+                            continue
+                        trading_logger.warning(f"Retrying LONG entry with reduced qty {qty} for {ccxt_symbol} due to: {e_first}")
+                        entry_order = await self.exchange.create_order(ccxt_symbol, 'market', 'buy', qty, params=order_params)
+                        formatted_quantity = qty
+                        break
+                    except Exception:
+                        continue
+                if entry_order is None:
+                    raise e_first
             trading_logger.info(f"LONG Entry order attempt: ID {entry_order.get('id')}, Status {entry_order.get('status')}, Avg Price {entry_order.get('average')}, Filled {entry_order.get('filled')}")
             
             actual_entry_price = current_price # Default to pre-fetched price
@@ -526,9 +574,37 @@ class BinanceExecutor:
             tp_percentage = self.config.get('trading.order.take_profit_percentage', 2.0)
 
             trading_logger.info(f"Placing MARKET SHORT order for {formatted_quantity} {ccxt_symbol} at ~{current_price}")
-            
-            # 创建订单（逐仓模式已在前面设置）
-            entry_order = await self.exchange.create_order(ccxt_symbol, 'market', 'sell', formatted_quantity)
+
+            # 识别是否为对冲模式，设置 positionSide
+            order_params = {}
+            try:
+                hedge_info = await self.exchange.fapiPrivateGetPositionSideDual()
+                hedge_mode = bool((hedge_info or {}).get('dualSidePosition'))
+            except Exception:
+                hedge_mode = False
+            if hedge_mode:
+                order_params['positionSide'] = 'SHORT'
+
+            # 按不足保证金回退为分批下单
+            entry_order = None
+            try:
+                entry_order = await self.exchange.create_order(ccxt_symbol, 'market', 'sell', formatted_quantity, params=order_params)
+            except Exception as e_first:
+                reduce_steps = [0.7, 0.5, 0.3, 0.2]
+                remaining_qty = formatted_quantity
+                for r in reduce_steps:
+                    try:
+                        qty = self.format_quantity(ccxt_symbol, remaining_qty * r)
+                        if not qty or qty <= 0:
+                            continue
+                        trading_logger.warning(f"Retrying SHORT entry with reduced qty {qty} for {ccxt_symbol} due to: {e_first}")
+                        entry_order = await self.exchange.create_order(ccxt_symbol, 'market', 'sell', qty, params=order_params)
+                        formatted_quantity = qty
+                        break
+                    except Exception:
+                        continue
+                if entry_order is None:
+                    raise e_first
             trading_logger.info(f"SHORT Entry order attempt: ID {entry_order.get('id')}, Status {entry_order.get('status')}, Avg Price {entry_order.get('average')}, Filled {entry_order.get('filled')}")
 
             actual_entry_price = current_price
@@ -922,7 +998,10 @@ class BinanceExecutor:
                 'info': account.get('info', {})
             }
         except Exception as e:
-            trading_logger.error(f"Error fetching account balance: {e}", exc_info=True)
+            import traceback
+            error_details = traceback.format_exc()
+            trading_logger.error(f"Error fetching account balance: {type(e).__name__}: {e}")
+            trading_logger.error(f"Account balance error details:\n{error_details}")
             return {}
     
     async def get_profit_loss_summary(self) -> Dict[str, Any]:
@@ -940,13 +1019,21 @@ class BinanceExecutor:
             realized_pnl = 0.0
             try:
                 # 获取最近的交易历史来计算已实现盈亏
+                # 注意：fetch_my_trades 在某些情况下可能失败，我们使用更安全的方法
                 trades = await self.exchange.fetch_my_trades(limit=100)
-                for trade in trades:
-                    if trade.get('fee') and trade['fee'].get('currency') == 'USDT':
-                        # 这里简化处理，实际应该根据交易方向计算
-                        pass
+                if trades and isinstance(trades, list) and len(trades) > 0:
+                    for trade in trades:
+                        if trade and isinstance(trade, dict) and trade.get('fee') and trade['fee'].get('currency') == 'USDT':
+                            # 这里简化处理，实际应该根据交易方向计算
+                            pass
+                else:
+                    trading_logger.debug("No trades found or trades is None/empty")
             except Exception as e:
-                trading_logger.warning(f"Could not fetch trade history for realized PnL: {e}")
+                import traceback
+                error_details = traceback.format_exc()
+                trading_logger.warning(f"Could not fetch trade history for realized PnL: {type(e).__name__}: {e}")
+                trading_logger.debug(f"Trade history error details:\n{error_details}")
+                # 继续执行，不影响其他数据的获取
             
             # 获取总资产价值
             total_asset_value = 0.0
@@ -962,5 +1049,8 @@ class BinanceExecutor:
                 'info': account.get('info', {})
             }
         except Exception as e:
-            trading_logger.error(f"Error fetching profit/loss summary: {e}", exc_info=True)
+            import traceback
+            error_details = traceback.format_exc()
+            trading_logger.error(f"Error fetching profit/loss summary: {type(e).__name__}: {e}")
+            trading_logger.error(f"Profit/loss error details:\n{error_details}")
             return {} 

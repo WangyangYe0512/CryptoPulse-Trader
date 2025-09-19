@@ -202,6 +202,16 @@ class RPC:
         self._state = State.STOPPED
         return {'status': 'stopping trader ...'}
     
+    def _rpc_pause(self) -> Dict[str, str]:
+        """暂停新开仓（保持持仓管理）"""
+        # 使用新的 State.PAUSED
+        try:
+            self._state = State.PAUSED
+        except Exception:
+            # 兼容性：若未定义，则回退为 STOPPED 行为
+            self._state = State.STOPPED
+        return {'status': 'pausing trader (no new entries) ...'}
+    
     def _rpc_reload_config(self) -> Dict[str, str]:
         """重载配置"""
         return {'status': 'Reloading config ...'}

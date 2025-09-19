@@ -42,4 +42,5 @@ class TradingMode(Enum):
 class State(Enum):
     RUNNING = 'running'
     STOPPED = 'stopped'
+    PAUSED = 'paused'
     RELOAD_CONFIG = 'reload_config'

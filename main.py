@@ -387,10 +387,33 @@ class CryptoPulseTrader:
         """执行交易"""
         try:
             trading_logger.info(f"执行 {len(signals)} 个交易...")
+            # 拦截暂停：当 /pause 后，禁止新开仓，但允许平仓类信号
+            is_paused = False
+            try:
+                from rpc.enums import State as RPCState
+                if (self.notification_manager and
+                    getattr(self.notification_manager, 'telegram_integration', None) and
+                    getattr(self.notification_manager.telegram_integration, 'rpc', None)):
+                    rpc_obj = self.notification_manager.telegram_integration.rpc
+                    is_paused = getattr(rpc_obj, '_state', None) == RPCState.PAUSED
+            except Exception:
+                is_paused = False
             
             trade_results = []
             for signal in signals:
                 try:
+                    # 暂停状态下拦截新开仓
+                    if is_paused:
+                        sig_type = signal.get('type') or signal.get('signal_type')
+                        if sig_type in ('OPEN_LONG', 'OPEN_SHORT'):
+                            trading_logger.info(f"已暂停：拦截新开仓信号 {signal.get('symbol')} ({sig_type})")
+                            trade_results.append({
+                                'status': 'skipped',
+                                'reason': 'paused',
+                                'signal_type': sig_type,
+                                'symbol': signal.get('symbol')
+                            })
+                            continue
                     result = await self.executor.execute_signal(signal)
                     trade_results.append(result)
                     

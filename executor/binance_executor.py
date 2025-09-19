@@ -10,7 +10,7 @@ class BinanceExecutor:
     
     def __init__(self, config: ConfigManager):
         self.config = config
-        self.testnet = config.get('api.binance.testnet', True)
+        self.testnet = config.get('api.binance.testnet', False)
         
         api_key = os.getenv('BINANCE_API_KEY')
         api_secret = os.getenv('BINANCE_API_SECRET')
@@ -169,7 +169,7 @@ class BinanceExecutor:
             trading_logger.info(f"Setting leverage to {leverage}x for {symbol}")
             
             # 使用CCXT设置杠杆
-            result = await self.exchange.set_leverage(leverage, symbol)
+            await self.exchange.set_leverage(leverage, symbol)
             trading_logger.info(f"Leverage set successfully for {symbol}: {leverage}x")
             return True
             
@@ -227,7 +227,7 @@ class BinanceExecutor:
                     return int(float(current_leverage))
             
             # 如果没有持仓，尝试从账户设置获取
-            account = await self.exchange.fetch_trading_fees()
+            await self.exchange.fetch_trading_fees()
             # 有些交易所在账户信息中包含杠杆设置
             return None
             
@@ -453,12 +453,17 @@ class BinanceExecutor:
             
             # Ensure entry_order is serializable (it usually is from CCXT)
             return {
-                "entry_order": entry_order, 
-                "sl_order": sl_order_response, 
-                "tp_order": tp_order_response, 
+                "entry_order": entry_order,
+                "sl_order": sl_order_response,
+                "tp_order": tp_order_response,
                 "status": final_status,
                 "sl_tp_errors": sl_tp_errors if sl_tp_errors else None,
-                "code": "long_order_processed"
+                "code": "long_order_processed",
+                # Helpful fallbacks for downstream notifications
+                "symbol": ccxt_symbol,
+                "requested_amount_usdt": amount_usdt,
+                "executed_price": actual_entry_price,
+                "executed_quantity": entry_order.get('filled') or formatted_quantity
             }
 
         except ccxt.InsufficientFunds as e:
@@ -600,7 +605,12 @@ class BinanceExecutor:
                 "tp_order": tp_order_response,
                 "status": final_status,
                 "sl_tp_errors": sl_tp_errors if sl_tp_errors else None,
-                "code": "short_order_processed"
+                "code": "short_order_processed",
+                # Helpful fallbacks for downstream notifications
+                "symbol": ccxt_symbol,
+                "requested_amount_usdt": amount_usdt,
+                "executed_price": actual_entry_price,
+                "executed_quantity": entry_order.get('filled') or formatted_quantity
             }
 
         except ccxt.InsufficientFunds as e:
@@ -827,10 +837,10 @@ class BinanceExecutor:
             for symbol_id, market_info in markets.items():
                 market_type = market_info.get('type')
                 is_usdt_settled_contract = (
-                    market_info.get('contract') == True and \
-                    market_info.get('linear') == True and \
-                    market_info.get('quote') == 'USDT' and 
-                    market_info.get('active') == True # Only consider active markets
+                    bool(market_info.get('contract')) and
+                    bool(market_info.get('linear')) and
+                    market_info.get('quote') == 'USDT' and
+                    bool(market_info.get('active'))
                 )
                 
                 # We are interested in both USDT-margined perpetual swaps and traditional futures
@@ -867,8 +877,8 @@ class BinanceExecutor:
                 if market_info and \
                    market_info.get('type') == 'future' and \
                    market_info.get('quote') == 'USDT' and \
-                   market_info.get('contract') == True and \
-                   market_info.get('linear') == True:
+                   bool(market_info.get('contract')) and \
+                   bool(market_info.get('linear')):
                     all_tickers_data.append(ticker) # ticker is already a dict
                 elif not market_info and symbols: # If specific symbols were requested but not found in markets.
                     trading_logger.warning(f"Ticker for {symbol} requested but market info not found after fetch_tickers.")

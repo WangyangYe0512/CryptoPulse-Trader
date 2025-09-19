@@ -39,14 +39,14 @@ cp .env-example .env
 编辑 `.env` 文件，设置必要的配置：
 ```env
 # Binance API 配置
-BINANCE_API_KEY=your_binance_api_key
-BINANCE_API_SECRET=your_binance_api_secret
+  BINANCE_API_KEY=your_binance_api_key
+  BINANCE_API_SECRET=your_binance_api_secret
 BINANCE_TESTNET=false
 
 # Telegram 通知配置（可选）
-TELEGRAM_BOT_TOKEN=your_telegram_bot_token
-TELEGRAM_CHAT_ID=your_telegram_chat_id
-```
+  TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+  TELEGRAM_CHAT_ID=your_telegram_chat_id
+  ```
 
 ### 4. 功能配置
 编辑 `config/config.yaml` 文件，调整交易参数和功能开关：

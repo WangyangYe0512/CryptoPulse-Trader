@@ -623,8 +623,21 @@ class Telegram(RPCHandler):
 
         message = self.compose_message(deepcopy(msg))
         if message:
+            # Single-topic support (env overrides config): TELEGRAM_TOPIC_ID
+            thread_id = self._config["telegram"].get("topic_id")
+            try:
+                import os
+                env_topic = os.getenv("TELEGRAM_TOPIC_ID")
+                if env_topic is not None and str(env_topic).strip() != "":
+                    try:
+                        thread_id = int(str(env_topic).strip())
+                    except Exception:
+                        # keep config value if conversion fails
+                        pass
+            except Exception:
+                pass
             asyncio.run_coroutine_threadsafe(
-                self._send_msg(message, disable_notification=(noti == "silent")), self._loop
+                self._send_msg(message, disable_notification=(noti == "silent"), message_thread_id=thread_id), self._loop
             )
 
     def _get_exit_emoji(self, msg):
@@ -2224,6 +2237,7 @@ class Telegram(RPCHandler):
         callback_path: str = "",
         reload_able: bool = False,
         query: CallbackQuery | None = None,
+        message_thread_id: int | None = None,
     ) -> None:
         """
         Send given markdown message
@@ -2251,6 +2265,22 @@ class Telegram(RPCHandler):
                 reply_markup = InlineKeyboardMarkup(keyboard)
             else:
                 reply_markup = ReplyKeyboardMarkup(self._keyboard, resize_keyboard=True)
+        
+        # Use provided thread_id or fall back to config/env
+        if message_thread_id is None:
+            try:
+                import os
+                env_topic = os.getenv("TELEGRAM_TOPIC_ID")
+                if env_topic is not None and str(env_topic).strip() != "":
+                    try:
+                        message_thread_id = int(str(env_topic).strip())
+                    except Exception:
+                        pass
+                if message_thread_id is None:
+                    message_thread_id = self._config["telegram"].get("topic_id")
+            except Exception:
+                message_thread_id = self._config["telegram"].get("topic_id")
+        
         try:
             try:
                 await self._app.bot.send_message(
@@ -2259,7 +2289,7 @@ class Telegram(RPCHandler):
                     parse_mode=parse_mode,
                     reply_markup=reply_markup,
                     disable_notification=disable_notification,
-                    message_thread_id=self._config["telegram"].get("topic_id"),
+                    message_thread_id=message_thread_id,
                 )
             except NetworkError as network_err:
                 # Sometimes the telegram server resets the current connection,
@@ -2273,7 +2303,7 @@ class Telegram(RPCHandler):
                     parse_mode=parse_mode,
                     reply_markup=reply_markup,
                     disable_notification=disable_notification,
-                    message_thread_id=self._config["telegram"].get("topic_id"),
+                    message_thread_id=message_thread_id,
                 )
         except TelegramError as telegram_err:
             logger.warning("TelegramError: %s! Giving up on that message.", telegram_err.message)

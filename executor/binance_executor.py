@@ -1,7 +1,7 @@
 import os
 import asyncio
 import ccxt.async_support as ccxt
-from typing import Dict, Optional, Set, List
+from typing import Dict, Optional, Set, List, Any
 from utils.logger import trading_logger
 from utils.config_manager import ConfigManager
 
@@ -887,4 +887,80 @@ class BinanceExecutor:
             return all_tickers_data
         except Exception as e:
             trading_logger.error(f"Error fetching Binance 24h tickers: {e}", exc_info=True)
-            return all_tickers_data # Return empty/partial list on error 
+            return all_tickers_data # Return empty/partial list on error
+    
+    async def get_account_balance(self) -> Dict[str, Any]:
+        """获取账户余额信息"""
+        try:
+            # 获取账户信息
+            account = await self.exchange.fetch_balance()
+            
+            # 提取USDT余额
+            usdt_balance = account.get('USDT', {})
+            free_balance = usdt_balance.get('free', 0.0)
+            used_balance = usdt_balance.get('used', 0.0)
+            total_balance = usdt_balance.get('total', 0.0)
+            
+            # 获取其他主要币种余额
+            other_balances = {}
+            for currency in ['BTC', 'ETH', 'BNB']:
+                if currency in account:
+                    other_balances[currency] = {
+                        'free': account[currency].get('free', 0.0),
+                        'used': account[currency].get('used', 0.0),
+                        'total': account[currency].get('total', 0.0)
+                    }
+            
+            return {
+                'USDT': {
+                    'free': free_balance,
+                    'used': used_balance,
+                    'total': total_balance
+                },
+                'other': other_balances,
+                'timestamp': account.get('timestamp'),
+                'info': account.get('info', {})
+            }
+        except Exception as e:
+            trading_logger.error(f"Error fetching account balance: {e}", exc_info=True)
+            return {}
+    
+    async def get_profit_loss_summary(self) -> Dict[str, Any]:
+        """获取盈亏统计摘要"""
+        try:
+            # 获取账户信息
+            account = await self.exchange.fetch_balance()
+            
+            # 获取未实现盈亏
+            unrealized_pnl = 0.0
+            if 'info' in account and 'totalUnrealizedProfit' in account['info']:
+                unrealized_pnl = float(account['info']['totalUnrealizedProfit'])
+            
+            # 获取已实现盈亏（从账户历史中获取）
+            realized_pnl = 0.0
+            try:
+                # 获取最近的交易历史来计算已实现盈亏
+                trades = await self.exchange.fetch_my_trades(limit=100)
+                for trade in trades:
+                    if trade.get('fee') and trade['fee'].get('currency') == 'USDT':
+                        # 这里简化处理，实际应该根据交易方向计算
+                        pass
+            except Exception as e:
+                trading_logger.warning(f"Could not fetch trade history for realized PnL: {e}")
+            
+            # 获取总资产价值
+            total_asset_value = 0.0
+            if 'info' in account and 'totalWalletBalance' in account['info']:
+                total_asset_value = float(account['info']['totalWalletBalance'])
+            
+            return {
+                'unrealized_pnl': unrealized_pnl,
+                'realized_pnl': realized_pnl,
+                'total_pnl': unrealized_pnl + realized_pnl,
+                'total_asset_value': total_asset_value,
+                'timestamp': account.get('timestamp'),
+                'info': account.get('info', {})
+            }
+        except Exception as e:
+            trading_logger.error(f"Error fetching profit/loss summary: {e}", exc_info=True)
+            return {} 

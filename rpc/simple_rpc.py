@@ -485,3 +485,219 @@ class RPC:
             'trade_id': trade_id,
             'result_msg': f'Manually entered trade for {pair}'
         }
+    
+    def _rpc_balance(self, stake_currency: str = "USDT", fiat_display_currency: str = "USD") -> Dict[str, Any]:
+        """获取账户余额"""
+        try:
+            # 从桥接器获取执行器
+            if hasattr(self, '_bridge') and self._bridge:
+                executor = self._bridge.config_manager.get_executor()
+                if executor:
+                    # 使用异步方法获取余额
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        balance_data = loop.run_until_complete(executor.get_account_balance())
+                        
+                        # 转换为 freqtrade 格式
+                        usdt_balance = balance_data.get('USDT', {})
+                        total = usdt_balance.get('total', 0.0)
+                        free = usdt_balance.get('free', 0.0)
+                        used = usdt_balance.get('used', 0.0)
+                        
+                        currencies = [{
+                            'currency': stake_currency,
+                            'free': free, 'balance': total, 'used': used,
+                            'bot_owned': total, 'stake': stake_currency,
+                            'is_position': False, 'is_bot_managed': True,
+                            'est_stake': total, 'est_stake_bot': total,
+                        }]
+                        
+                        return {
+                            'currencies': currencies, 'total': total, 'total_bot': total,
+                            'symbol': stake_currency, 'value': total, 'value_bot': total,
+                            'stake': stake_currency, 'starting_capital': total,
+                            'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
+                            'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self._trades),
+                        }
+                    except RuntimeError:
+                        # 如果没有事件循环，创建一个新的
+                        balance_data = asyncio.run(executor.get_account_balance())
+                        
+                        # 转换为 freqtrade 格式
+                        usdt_balance = balance_data.get('USDT', {})
+                        total = usdt_balance.get('total', 0.0)
+                        free = usdt_balance.get('free', 0.0)
+                        used = usdt_balance.get('used', 0.0)
+                        
+                        currencies = [{
+                            'currency': stake_currency,
+                            'free': free, 'balance': total, 'used': used,
+                            'bot_owned': total, 'stake': stake_currency,
+                            'is_position': False, 'is_bot_managed': True,
+                            'est_stake': total, 'est_stake_bot': total,
+                        }]
+                        
+                        return {
+                            'currencies': currencies, 'total': total, 'total_bot': total,
+                            'symbol': stake_currency, 'value': total, 'value_bot': total,
+                            'stake': stake_currency, 'starting_capital': total,
+                            'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
+                            'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self._trades),
+                        }
+            
+            # 如果没有执行器，返回默认值
+            total = 0.0
+            currencies = [{
+                'currency': stake_currency,
+                'free': 0.0, 'balance': 0.0, 'used': 0.0,
+                'bot_owned': 0.0, 'stake': stake_currency,
+                'is_position': False, 'is_bot_managed': True,
+                'est_stake': 0.0, 'est_stake_bot': 0.0,
+            }]
+            return {
+                'currencies': currencies, 'total': total, 'total_bot': total,
+                'symbol': stake_currency, 'value': total, 'value_bot': total,
+                'stake': stake_currency, 'starting_capital': total,
+                'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
+                'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self._trades),
+                'error': 'No executor available'
+            }
+        except Exception as e:
+            logger.error(f"Error getting balance: {e}")
+            total = 0.0
+            currencies = [{
+                'currency': stake_currency,
+                'free': 0.0, 'balance': 0.0, 'used': 0.0,
+                'bot_owned': 0.0, 'stake': stake_currency,
+                'is_position': False, 'is_bot_managed': True,
+                'est_stake': 0.0, 'est_stake_bot': 0.0,
+            }]
+            return {
+                'currencies': currencies, 'total': total, 'total_bot': total,
+                'symbol': stake_currency, 'value': total, 'value_bot': total,
+                'stake': stake_currency, 'starting_capital': total,
+                'starting_capital_fiat': total, 'starting_capital_ratio': 1.0,
+                'starting_capital_fiat_ratio': 1.0, 'trade_count': len(self._trades),
+                'error': str(e)
+            }
+    
+    def _rpc_profit(self, stake_currency: str = "USDT", fiat_display_currency: str = "USD") -> Dict[str, Any]:
+        """获取盈亏统计"""
+        try:
+            # 从桥接器获取执行器
+            if hasattr(self, '_bridge') and self._bridge:
+                executor = self._bridge.config_manager.get_executor()
+                if executor:
+                    # 使用异步方法获取盈亏
+                    import asyncio
+                    try:
+                        loop = asyncio.get_event_loop()
+                        profit_data = loop.run_until_complete(executor.get_profit_loss_summary())
+                        
+                        # 转换为 freqtrade 格式
+                        unrealized_pnl = profit_data.get('unrealized_pnl', 0.0)
+                        realized_pnl = profit_data.get('realized_pnl', 0.0)
+                        total_pnl = profit_data.get('total_pnl', 0.0)
+                        total_asset_value = profit_data.get('total_asset_value', 0.0)
+                        
+                        return {
+                            'profit_closed_coin': realized_pnl,
+                            'profit_closed_fiat': realized_pnl,
+                            'profit_closed_ratio': (realized_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
+                            'profit_all_coin': total_pnl,
+                            'profit_all_fiat': total_pnl,
+                            'profit_all_ratio': (total_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
+                            'trade_count': len(self._trades),
+                            'first_trade_date': None,
+                            'latest_trade_date': None,
+                            'avg_duration': 0,
+                            'best_pair': None,
+                            'best_rate': 0.0,
+                            'worst_pair': None,
+                            'worst_rate': 0.0,
+                            'winning_trades': 0,
+                            'losing_trades': 0,
+                            'win_rate': 0.0,
+                            'unrealized_pnl': unrealized_pnl,
+                            'total_asset_value': total_asset_value,
+                        }
+                    except RuntimeError:
+                        # 如果没有事件循环，创建一个新的
+                        profit_data = asyncio.run(executor.get_profit_loss_summary())
+                        
+                        # 转换为 freqtrade 格式
+                        unrealized_pnl = profit_data.get('unrealized_pnl', 0.0)
+                        realized_pnl = profit_data.get('realized_pnl', 0.0)
+                        total_pnl = profit_data.get('total_pnl', 0.0)
+                        total_asset_value = profit_data.get('total_asset_value', 0.0)
+                        
+                        return {
+                            'profit_closed_coin': realized_pnl,
+                            'profit_closed_fiat': realized_pnl,
+                            'profit_closed_ratio': (realized_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
+                            'profit_all_coin': total_pnl,
+                            'profit_all_fiat': total_pnl,
+                            'profit_all_ratio': (total_pnl / total_asset_value * 100) if total_asset_value > 0 else 0.0,
+                            'trade_count': len(self._trades),
+                            'first_trade_date': None,
+                            'latest_trade_date': None,
+                            'avg_duration': 0,
+                            'best_pair': None,
+                            'best_rate': 0.0,
+                            'worst_pair': None,
+                            'worst_rate': 0.0,
+                            'winning_trades': 0,
+                            'losing_trades': 0,
+                            'win_rate': 0.0,
+                            'unrealized_pnl': unrealized_pnl,
+                            'total_asset_value': total_asset_value,
+                        }
+            
+            # 如果没有执行器，返回默认值
+            return {
+                'profit_closed_coin': 0.0,
+                'profit_closed_fiat': 0.0,
+                'profit_closed_ratio': 0.0,
+                'profit_all_coin': 0.0,
+                'profit_all_fiat': 0.0,
+                'profit_all_ratio': 0.0,
+                'trade_count': len(self._trades),
+                'first_trade_date': None,
+                'latest_trade_date': None,
+                'avg_duration': 0,
+                'best_pair': None,
+                'best_rate': 0.0,
+                'worst_pair': None,
+                'worst_rate': 0.0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'win_rate': 0.0,
+                'unrealized_pnl': 0.0,
+                'total_asset_value': 0.0,
+                'error': 'No executor available'
+            }
+        except Exception as e:
+            logger.error(f"Error getting profit: {e}")
+            return {
+                'profit_closed_coin': 0.0,
+                'profit_closed_fiat': 0.0,
+                'profit_closed_ratio': 0.0,
+                'profit_all_coin': 0.0,
+                'profit_all_fiat': 0.0,
+                'profit_all_ratio': 0.0,
+                'trade_count': len(self._trades),
+                'first_trade_date': None,
+                'latest_trade_date': None,
+                'avg_duration': 0,
+                'best_pair': None,
+                'best_rate': 0.0,
+                'worst_pair': None,
+                'worst_rate': 0.0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'win_rate': 0.0,
+                'unrealized_pnl': 0.0,
+                'total_asset_value': 0.0,
+                'error': str(e)
+            }

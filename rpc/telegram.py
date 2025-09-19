@@ -299,6 +299,8 @@ class Telegram(RPCHandler):
             CommandHandler("tg_info", self._tg_info),
             CommandHandler("profit_long", self._profit_long),
             CommandHandler("profit_short", self._profit_short),
+            CommandHandler("balance", self._balance),
+            CommandHandler("profit", self._profit),
         ]
         callbacks = [
             CallbackQueryHandler(self._status_table, pattern="update_status_table"),
@@ -2355,3 +2357,96 @@ class Telegram(RPCHandler):
             )
         except TelegramError as telegram_err:
             logger.warning("TelegramError: %s! Giving up on that message.", telegram_err.message)
+    @authorized_only
+    async def _balance(self, update: Update, context: CallbackContext) -> None:
+        """
+        Handler for /balance command.
+        Returns the current account balance
+        :param update: message update
+        :param context: callback context
+        :return: None
+        """
+        try:
+            balance_data = self._rpc._rpc_balance(self._config.get("stake_currency", "USDT"), 
+                                                self._config.get("fiat_display_currency", "USD"))
+            
+            if 'error' in balance_data:
+                await self._send_msg(f"❌ 获取余额失败: {balance_data['error']}")
+                return
+            
+            # 格式化余额信息 (freqtrade 格式)
+            currencies = balance_data.get('currencies', [])
+            total_balance = balance_data.get('total', 0.0)
+            
+            message = "💰 *账户余额*\n\n"
+            
+            if currencies:
+                for currency_info in currencies:
+                    currency = currency_info.get('currency', 'USDT')
+                    free_balance = currency_info.get('free', 0.0)
+                    used_balance = currency_info.get('used', 0.0)
+                    total_currency = currency_info.get('balance', 0.0)
+                    
+                    message += f"💵 {currency}:\n"
+                    message += f"• 可用: `{free_balance:.2f}`\n"
+                    message += f"• 已用: `{used_balance:.2f}`\n"
+                    message += f"• 总计: `{total_currency:.2f}`\n\n"
+            else:
+                message += f"💵 总余额: `{total_balance:.2f}`\n\n"
+            
+            # 添加交易统计
+            trade_count = balance_data.get('trade_count', 0)
+            if trade_count > 0:
+                message += f"📊 交易统计: {trade_count} 笔交易\n"
+            
+            await self._send_msg(message, parse_mode=ParseMode.MARKDOWN)
+            
+        except Exception as e:
+            logger.error(f"Error in _balance: {e}", exc_info=True)
+            await self._send_msg(f"❌ 获取余额时发生错误: {str(e)}")
+    
+    @authorized_only
+    async def _profit(self, update: Update, context: CallbackContext) -> None:
+        """
+        Handler for /profit command.
+        Returns the current profit/loss summary
+        :param update: message update
+        :param context: callback context
+        :return: None
+        """
+        try:
+            profit_data = self._rpc._rpc_profit(self._config.get("stake_currency", "USDT"), 
+                                              self._config.get("fiat_display_currency", "USD"))
+            
+            if 'error' in profit_data:
+                await self._send_msg(f"❌ 获取盈亏统计失败: {profit_data['error']}")
+                return
+            
+            # 格式化盈亏信息 (freqtrade 格式)
+            profit_all_coin = profit_data.get('profit_all_coin', 0.0)
+            profit_all_ratio = profit_data.get('profit_all_ratio', 0.0)
+            profit_closed_coin = profit_data.get('profit_closed_coin', 0.0)
+            profit_closed_ratio = profit_data.get('profit_closed_ratio', 0.0)
+            unrealized_pnl = profit_data.get('unrealized_pnl', 0.0)
+            total_asset_value = profit_data.get('total_asset_value', 0.0)
+            trade_count = profit_data.get('trade_count', 0)
+            
+            # 确定盈亏显示颜色
+            pnl_emoji = "📈" if profit_all_coin >= 0 else "📉"
+            pnl_color = "🟢" if profit_all_coin >= 0 else "🔴"
+            
+            message = f"{pnl_emoji} *盈亏统计*\n\n"
+            message += f"{pnl_color} 总盈亏: `{profit_all_coin:.2f} USDT` ({profit_all_ratio:.2f}%)\n\n"
+            message += "📊 详细分解:\n"
+            message += f"• 已实现盈亏: `{profit_closed_coin:.2f} USDT` ({profit_closed_ratio:.2f}%)\n"
+            message += f"• 未实现盈亏: `{unrealized_pnl:.2f} USDT`\n"
+            message += f"• 总资产价值: `{total_asset_value:.2f} USDT`\n"
+            
+            if trade_count > 0:
+                message += f"• 交易笔数: {trade_count}\n"
+            
+            await self._send_msg(message, parse_mode=ParseMode.MARKDOWN)
+            
+        except Exception as e:
+            logger.error(f"Error in _profit: {e}", exc_info=True)
+            await self._send_msg(f"❌ 获取盈亏统计时发生错误: {str(e)}")

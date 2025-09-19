@@ -222,4 +222,13 @@ class ConfigManager:
         self._set_env_var(['database', 'filename'], 'DB_FILENAME', 'trading_data.sqlite')
             
     def get_all(self) -> Dict[str, Any]:
-        return self.config.copy() 
+        return self.config.copy()
+    
+    def get_executor(self):
+        """获取交易执行器实例"""
+        try:
+            from executor.binance_executor import BinanceExecutor
+            return BinanceExecutor(self)
+        except Exception as e:
+            self.logger.error(f"Failed to create executor: {e}")
+            return None 

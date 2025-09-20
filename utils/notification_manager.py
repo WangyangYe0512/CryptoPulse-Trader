@@ -13,7 +13,7 @@ import queue
 
 from utils.logger import trading_logger
 from utils.config_manager import ConfigManager
-from utils.telegram_bot import TelegramBot
+from utils.enhanced_telegram_integration import EnhancedTelegramIntegration
 
 
 class NotificationPriority(Enum):
@@ -132,7 +132,7 @@ class NotificationManager:
         self.config = config_manager.config
         
         # 通知渠道
-        self.telegram_bot: Optional[TelegramBot] = None
+        self.telegram_integration: Optional[EnhancedTelegramIntegration] = None
         
         # 通知队列和处理
         self.notification_queue = queue.Queue(maxsize=1000)  # 限制队列大小
@@ -165,21 +165,21 @@ class NotificationManager:
         self.start()
     
     def _init_telegram_bot(self):
-        """初始化Telegram机器人"""
+        """初始化Telegram集成"""
         try:
             notification_config = self.config.get('notification', {})
             telegram_config = notification_config.get('telegram', {})
             
             if telegram_config.get('enabled', False):
-                self.telegram_bot = TelegramBot(self.config_manager)
-                trading_logger.info("Telegram通知已启用")
+                self.telegram_integration = EnhancedTelegramIntegration(self.config_manager)
+                trading_logger.info("freqtrade Telegram集成已启用")
             else:
-                trading_logger.info("Telegram通知未启用")
+                trading_logger.info("Telegram集成未启用")
                 
         except Exception as e:
-            trading_logger.error(f"初始化Telegram机器人失败: {e}", exc_info=True)
+            trading_logger.error(f"初始化Telegram集成失败: {e}", exc_info=True)
             # 不影响主程序继续运行
-            self.telegram_bot = None
+            self.telegram_integration = None
     
     def start(self):
         """启动通知管理器"""
@@ -193,13 +193,9 @@ class NotificationManager:
             self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
             self.worker_thread.start()
             
-            # 启动Telegram专用线程
-            if self.telegram_bot:
-                self.telegram_thread = threading.Thread(target=self._telegram_worker_loop, daemon=True)
-                self.telegram_thread.start()
-                
-                # 启动Telegram机器人（异步，安全方式）
-                self._safe_start_telegram_bot()
+            # 启动Telegram集成
+            if self.telegram_integration:
+                self.telegram_integration.start()
             
             trading_logger.info("通知管理器已启动")
             
@@ -386,83 +382,53 @@ class NotificationManager:
     def notify_trade_open(self, symbol: str, side: str, price: float, amount: float, 
                          stop_loss: float = 0, take_profit: float = 0):
         """通知开仓"""
-        data = {
-            'action': 'open',
-            'symbol': symbol,
-            'side': side,
-            'price': price,
-            'amount': amount,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'timestamp': datetime.now()
-        }
-        self.send_notification(NotificationType.TRADE_OPEN, data, NotificationPriority.HIGH)
+        if self.telegram_integration:
+            self.telegram_integration.send_trade_open_message(symbol, side, price, amount)
     
     def notify_trade_close(self, symbol: str, side: str, close_price: float, 
                           pnl: float, pnl_pct: float, duration: int, reason: str = 'Manual'):
         """通知平仓"""
-        data = {
-            'action': 'close',
-            'symbol': symbol,
-            'side': side,
-            'close_price': close_price,
-            'pnl': pnl,
-            'pnl_pct': pnl_pct,
-            'duration': duration,
-            'reason': reason,
-            'timestamp': datetime.now()
-        }
-        self.send_notification(NotificationType.TRADE_CLOSE, data, NotificationPriority.HIGH)
+        if self.telegram_integration:
+            self.telegram_integration.send_trade_close_message(symbol, side, close_price, pnl, pnl_pct)
     
     def notify_system_start(self):
         """通知系统启动"""
-        data = {
-            'status': 'running',
-            'message': 'CryptoPulse Trader 已启动',
-            'timestamp': datetime.now()
-        }
-        self.send_notification(NotificationType.SYSTEM_START, data, NotificationPriority.NORMAL)
+        if self.telegram_integration:
+            self.telegram_integration.send_startup_message()
     
     def notify_system_stop(self):
         """通知系统停止"""
-        data = {
-            'status': 'stopped',
-            'message': 'CryptoPulse Trader 已停止',
-            'timestamp': datetime.now()
-        }
-        self.send_notification(NotificationType.SYSTEM_STOP, data, NotificationPriority.NORMAL)
+        # 发送停止消息
+        pass  # 停止时不发送消息，避免冲突
     
     def notify_error(self, error_type: str, error_message: str, priority: NotificationPriority = NotificationPriority.NORMAL):
         """通知系统错误"""
-        data = {
-            'type': error_type,
-            'message': error_message,
-            'timestamp': datetime.now()
-        }
-        self.send_notification(NotificationType.SYSTEM_ERROR, data, priority)
+        if self.telegram_integration:
+            self.telegram_integration.send_error_message(error_type, error_message)
     
     def notify_risk_warning(self, message: str):
         """通知风险警告"""
-        data = {
-            'message': message,
-            'timestamp': datetime.now()
-        }
-        self.send_notification(NotificationType.RISK_WARNING, data, NotificationPriority.HIGH)
+        if self.telegram_integration:
+            self.telegram_integration.send_error_message("风险警告", message)
     
     # =================== 状态查询方法 ===================
     
     def get_status(self) -> Dict[str, Any]:
         """获取通知管理器状态"""
-        telegram_status = {}
-        if self.telegram_bot:
-            telegram_status = self.telegram_bot.get_health_status()
+        telegram_status = {
+            'enabled': self.telegram_integration is not None and self.telegram_integration.is_enabled(),
+            'healthy': True,
+            'errors': 0
+        }
         
         return {
             'is_running': self.is_running,
             'queue_size': self.notification_queue.qsize(),
             'stats': self.stats.copy(),
             'failsafe': self.failsafe.get_status(),
-            'telegram': telegram_status,
+            'channels': {
+                'telegram': telegram_status
+            },
             'dedup_cache_size': len(self.recent_notifications)
         }
     
@@ -561,17 +527,13 @@ class NotificationManager:
         try:
             self.is_running = False
             
-            # 停止Telegram机器人（异步，安全方式）
-            if self.telegram_bot:
-                self._safe_stop_telegram_bot()
+            # 停止Telegram集成
+            if self.telegram_integration:
+                self.telegram_integration.stop()
                  
             # 等待工作线程结束
             if self.worker_thread and self.worker_thread.is_alive():
                 self.worker_thread.join(timeout=5.0)
-                
-            # 等待Telegram线程结束
-            if self.telegram_thread and self.telegram_thread.is_alive():
-                self.telegram_thread.join(timeout=5.0)
             
             trading_logger.info("通知管理器已停止")
             

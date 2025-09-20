@@ -62,6 +62,7 @@ class WebSocketMarketScanner:
             trading_logger.info(f"WebSocketMarketScanner configured for Live Futures (REST: {self.binance_rest_url}, WS: {self._ws_url})")
 
         self.ws = None
+        self._connect_task = None
         
         # 验证 CoinGecko API key
         self.coingecko_api_key = os.getenv('COINGECKO_API_KEY')
@@ -210,7 +211,8 @@ class WebSocketMarketScanner:
                         for coin in data.get('top_gainers', []):
                             try:
                                 symbol = coin.get('symbol', '').replace('$', '').upper()
-                                if symbol: gainers.append(symbol)
+                                if symbol:
+                                    gainers.append(symbol)
                             except Exception as e:
                                 trading_logger.error(f"处理涨幅榜币种时出错: {coin}, 错误: {str(e)}")
                                 continue
@@ -218,7 +220,8 @@ class WebSocketMarketScanner:
                         for coin in data.get('top_losers', []):
                             try:
                                 symbol = coin.get('symbol', '').replace('$', '').upper()
-                                if symbol: losers.append(symbol)
+                                if symbol:
+                                    losers.append(symbol)
                             except Exception as e:
                                 trading_logger.error(f"处理跌幅榜币种时出错: {coin}, 错误: {str(e)}")
                                 continue
@@ -462,6 +465,9 @@ class WebSocketMarketScanner:
                             break
                         await self.process_message(message)
                         
+            except asyncio.CancelledError:
+                trading_logger.info("WebSocket connect 任务收到取消信号，准备退出...")
+                break
             except websockets.exceptions.ConnectionClosed as e:
                 trading_logger.error(f"WebSocket连接关闭: {e}. Status: {e.code}, Reason: {e.reason}", exc_info=True)
             except ConnectionRefusedError:
@@ -498,7 +504,7 @@ class WebSocketMarketScanner:
         try:
             data = json.loads(message)
             if data.get('e') == '24hrTicker':
-                trading_logger.info(f"📊 收到Ticker消息: {data['s']} 价格={data['c']}")
+                trading_logger.debug(f"📊 收到Ticker消息: {data['s']} 价格={data['c']}")
             else:
                 trading_logger.debug(f"收到WebSocket消息: {data}")  # 非ticker消息保持debug级别
 
@@ -506,7 +512,7 @@ class WebSocketMarketScanner:
             if 'e' in data and data['e'] == '24hrTicker':
                 ticker_data = data
                 symbol = ticker_data['s']
-                trading_logger.info(f"📈 Processing ticker for symbol: {symbol}. Current watchlist size: {len(self.watchlist)}")
+                trading_logger.debug(f"📈 Processing ticker for symbol: {symbol}. Current watchlist size: {len(self.watchlist)}")
 
                 # 🛡️ 验证接收到的ticker符号是否有效
                 if self.symbol_validator:
@@ -543,14 +549,14 @@ class WebSocketMarketScanner:
                     'data_source': 'ticker_stream'
                 }
                 
-                trading_logger.info(f"💰 处理后Ticker for {symbol}: Price={processed_ticker['close']}, "
+                trading_logger.debug(f"💰 处理后Ticker for {symbol}: Price={processed_ticker['close']}, "
                                   f"24hChange={processed_ticker['price_change']:+.2f}%, "
                                   f"Volume={processed_ticker['volume']}")
                 
                 if self.data_queue:
-                    trading_logger.info(f"📤 Sending ticker data for {symbol} to strategy (queue size: {self.data_queue.qsize()})")
+                    trading_logger.debug(f"📤 Sending ticker data for {symbol} to strategy (queue size: {self.data_queue.qsize()})")
                     await self.data_queue.put(processed_ticker)
-                    trading_logger.info(f"✅ Successfully sent {symbol} ticker to strategy")
+                    trading_logger.debug(f"✅ Successfully sent {symbol} ticker to strategy")
                 else:
                     trading_logger.warning("⚠️ Data queue not available - ticker data cannot reach strategy!")
 
@@ -594,8 +600,8 @@ class WebSocketMarketScanner:
                     if self.watchlist and (not self.ws or not self.is_running):
                         trading_logger.info("Watchlist非空且WebSocket未运行，尝试启动连接。")
                         # Run connect in a separate task so scan_market can continue checking stop_event
-                        # and potentially other periodic tasks if any were added here.
-                        asyncio.create_task(self.connect())
+                        # Keep a handle to allow graceful cancellation on shutdown.
+                        self._connect_task = asyncio.create_task(self.connect())
                     elif not self.watchlist:
                          trading_logger.info("Watchlist为空，WebSocket将不会启动/会停止（如果当前正在运行）。")
                          if self.ws and self.is_running:
@@ -634,6 +640,15 @@ class WebSocketMarketScanner:
                 trading_logger.error(f"关闭WebSocket时出错: {e}", exc_info=True)
         else:
             trading_logger.info("WebSocket连接未激活或已关闭。")
+        # 取消 connect 任务（如果存在且尚未完成）
+        try:
+            if self._connect_task and not self._connect_task.done():
+                trading_logger.info("取消 connect 任务...")
+                self._connect_task.cancel()
+        except Exception:
+            pass
+        finally:
+            self._connect_task = None
         self.is_running = False
         self.ws = None # Clear the ws object
 

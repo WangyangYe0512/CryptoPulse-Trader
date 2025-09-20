@@ -54,6 +54,11 @@ class CryptoPulseTrader:
             'last_error_time': None
         }
         
+        # 异步运行时引用（用于优雅关闭）
+        self._loop = None
+        self._tasks = []
+        self._stopping = False
+
         # 初始化组件
         self._initialize_components()
     
@@ -76,7 +81,7 @@ class CryptoPulseTrader:
             # 4. 初始化市场扫描器 (传入数据队列)
             self.market_scanner = MarketScanner(
                 config=self.config_manager,  # 传递ConfigManager对象，不是字典
-                testnet=self.config_manager.config.get('exchange', {}).get('testnet', True),
+                testnet=self.config_manager.get('api.binance.testnet', False),
                 data_queue=self.data_queue  # 重要：传入数据队列
             )
             
@@ -130,6 +135,9 @@ class CryptoPulseTrader:
             # 发送启动通知（非阻塞，失败不影响系统）
             self._safe_notify_system_start()
             
+            # 发送系统就绪消息（在启动后立即发送，不等待市场扫描）
+            self._safe_notify_system_ready()
+            
             # 运行主循环
             self._run_main_loop()
             
@@ -152,6 +160,19 @@ class CryptoPulseTrader:
             self.system_status['notification_failures'] += 1
             self.error_stats['notification_errors'] += 1
     
+    def _safe_notify_system_ready(self):
+        """安全发送系统就绪通知"""
+        try:
+            if self.notification_manager and hasattr(self.notification_manager, 'telegram_integration'):
+                if self.notification_manager.telegram_integration:
+                    self.notification_manager.telegram_integration.send_system_ready_message()
+                    self.system_status['notifications_sent'] += 1
+                    trading_logger.info("系统就绪通知已发送")
+        except Exception as e:
+            trading_logger.warning(f"发送系统就绪通知失败（不影响系统运行）: {e}")
+            self.system_status['notification_failures'] += 1
+            self.error_stats['notification_errors'] += 1
+    
     def _run_main_loop(self):
         """运行主循环 - 支持实时数据处理"""
         scan_interval = self.config_manager.config.get('trading', {}).get('scan_interval', 3600)  # 默认1小时
@@ -167,6 +188,7 @@ class CryptoPulseTrader:
         
         # 创建任务
         tasks = []
+        self._loop = asyncio.get_running_loop()
         
         # 1. 定时交易周期任务
         trading_cycle_task = asyncio.create_task(self._periodic_trading_cycle(scan_interval))
@@ -175,10 +197,13 @@ class CryptoPulseTrader:
         # 2. 实时数据处理任务
         data_processing_task = asyncio.create_task(self._process_realtime_data())
         tasks.append(data_processing_task)
+        self._tasks = tasks
         
         try:
             # 等待所有任务完成（或被中断）
             await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            trading_logger.info("异步主循环接收到取消信号，准备退出...")
         except KeyboardInterrupt:
             trading_logger.info("收到中断信号，正在停止异步任务...")
             for task in tasks:
@@ -188,8 +213,37 @@ class CryptoPulseTrader:
         finally:
             trading_logger.info("异步主循环已停止")
     
+    def _cancel_async_tasks(self):
+        """在线程安全的方式取消所有运行中的异步任务，并请求WS关闭"""
+        try:
+            if self._loop:
+                def _do_cancel():
+                    # 通知扫描器停止（防止WS重连）
+                    try:
+                        if self.market_scanner and hasattr(self.market_scanner, 'stop_event') and self.market_scanner.stop_event:
+                            self.market_scanner.stop_event.set()
+                    except Exception:
+                        pass
+                    for t in list(self._tasks or []):
+                        try:
+                            t.cancel()
+                        except Exception:
+                            pass
+                    # 请求关闭WS连接
+                    if self.market_scanner:
+                        try:
+                            coro = self.market_scanner.stop_ws_connection()
+                            asyncio.create_task(coro)
+                        except Exception:
+                            pass
+                self._loop.call_soon_threadsafe(_do_cancel)
+        except Exception as e:
+            trading_logger.warning(f"取消异步任务时出错: {e}")
+
     async def _periodic_trading_cycle(self, scan_interval):
         """定时交易周期任务 - 现在主要用于维护watchlist"""
+        first_cycle = True  # 标记第一个周期
+        
         while self.is_running:
             try:
                 cycle_start_time = asyncio.get_event_loop().time()
@@ -197,6 +251,10 @@ class CryptoPulseTrader:
                 # 只执行市场扫描来更新watchlist，不执行交易信号分析
                 # 交易信号完全由实时ticker数据流处理
                 await self._execute_market_scan()
+                
+                # 第一次市场扫描完成（不再发送就绪消息，已在启动时发送）
+                if first_cycle:
+                    first_cycle = False
                 
                 # 计算执行时间
                 cycle_duration = asyncio.get_event_loop().time() - cycle_start_time
@@ -246,9 +304,6 @@ class CryptoPulseTrader:
     async def _handle_ticker_data(self, ticker_data):
         """处理单个ticker数据并生成交易信号"""
         try:
-            symbol = ticker_data['symbol']
-            price = ticker_data['close']
-            
             # 📈 使用策略分析市场数据
             signal = self.strategy.analyze_market(ticker_data)
             
@@ -332,10 +387,33 @@ class CryptoPulseTrader:
         """执行交易"""
         try:
             trading_logger.info(f"执行 {len(signals)} 个交易...")
+            # 拦截暂停：当 /pause 后，禁止新开仓，但允许平仓类信号
+            is_paused = False
+            try:
+                from rpc.enums import State as RPCState
+                if (self.notification_manager and
+                    getattr(self.notification_manager, 'telegram_integration', None) and
+                    getattr(self.notification_manager.telegram_integration, 'rpc', None)):
+                    rpc_obj = self.notification_manager.telegram_integration.rpc
+                    is_paused = getattr(rpc_obj, '_state', None) == RPCState.PAUSED
+            except Exception:
+                is_paused = False
             
             trade_results = []
             for signal in signals:
                 try:
+                    # 暂停状态下拦截新开仓
+                    if is_paused:
+                        sig_type = signal.get('type') or signal.get('signal_type')
+                        if sig_type in ('OPEN_LONG', 'OPEN_SHORT'):
+                            trading_logger.info(f"已暂停：拦截新开仓信号 {signal.get('symbol')} ({sig_type})")
+                            trade_results.append({
+                                'status': 'skipped',
+                                'reason': 'paused',
+                                'signal_type': sig_type,
+                                'symbol': signal.get('symbol')
+                            })
+                            continue
                     result = await self.executor.execute_signal(signal)
                     trade_results.append(result)
                     
@@ -384,17 +462,29 @@ class CryptoPulseTrader:
         """安全发送交易成功通知"""
         try:
             if self.notification_manager:
-                # 提取交易信息
-                symbol = trade_result.get('symbol', 'Unknown')
-                side = trade_result.get('side', 'Unknown')
-                price = trade_result.get('price', 0)
-                amount = trade_result.get('amount', 0)
-                
+                # 从执行器返回结构中提取信息（兼容CCXT统一结构）
+                entry_order = trade_result.get('entry_order') or {}
+                # 优先使用 CCXT 返回的规范化 symbol
+                symbol = entry_order.get('symbol') or trade_result.get('symbol') or trade_result.get('ccxt_symbol') or 'Unknown'
+                # 规范化 symbol （移除结算后缀，如 'BTC/USDT:USDT' -> 'BTC/USDT'）
+                if ':' in symbol:
+                    symbol = symbol.split(':')[0]
+
+                # 方向推断：市场买单视为多头，卖单为空头（单向模式）
+                side_ccxt = entry_order.get('side') or trade_result.get('side') or 'buy'
+                side = 'long' if str(side_ccxt).lower() == 'buy' else 'short'
+
+                # 成交均价与名义金额（USDT）
+                price = entry_order.get('average') or entry_order.get('price') or trade_result.get('executed_price') or trade_result.get('price') or 0
+                amount_filled = entry_order.get('filled') or entry_order.get('amount') or trade_result.get('executed_quantity') or trade_result.get('amount') or 0
+                notional_usdt = entry_order.get('cost') or trade_result.get('requested_amount_usdt') or (price * amount_filled if price and amount_filled else 0)
+
+                # 发送开仓通知（amount 参数按我们集成定义为 USDT 名义）
                 self.notification_manager.notify_trade_open(
                     symbol=symbol,
                     side=side,
-                    price=price,
-                    amount=amount
+                    price=float(price) if price else 0.0,
+                    amount=float(notional_usdt) if notional_usdt else 0.0
                 )
                 self.system_status['notifications_sent'] += 1
         except Exception as e:
@@ -438,15 +528,20 @@ class CryptoPulseTrader:
     
     def stop(self):
         """停止交易机器人"""
-        if not self.is_running:
+        if not self.is_running and self._stopping:
             return
             
         try:
+            if self._stopping:
+                return
+            self._stopping = True
             trading_logger.info("=" * 50)
             trading_logger.info("🛑 CryptoPulse Trader 正在停止...")
             
             # 1. 停止主循环
             self.is_running = False
+            # 取消异步任务与WS
+            self._cancel_async_tasks()
             
             # 2. 停止通知管理器
             if self.notification_manager:
@@ -454,9 +549,8 @@ class CryptoPulseTrader:
                 trading_logger.info("通知管理器已停止")
             
             # 3. 停止市场扫描器
-            if self.market_scanner:
-                asyncio.run(self.market_scanner.stop_ws_connection())
-                trading_logger.info("市场扫描器已停止")
+            # 已在 _cancel_async_tasks 中请求关闭WS，这里不再阻塞当前线程
+            trading_logger.info("已发出停止WebSocket指令")
             
             # 4. 交易执行器无需特殊停止操作
             if self.executor:
@@ -471,11 +565,24 @@ class CryptoPulseTrader:
             trading_logger.info("CryptoPulse Trader 已安全停止")
             trading_logger.info("=" * 50)
             
+            # 7. 强制退出（超时兜底）
+            import threading
+            import time
+            
+            def force_exit():
+                time.sleep(3)  # 给予3秒优雅关闭时间
+                trading_logger.warning("3秒超时，强制退出程序")
+                import os
+                os._exit(0)  # 强制退出
+            
+            exit_timer = threading.Thread(target=force_exit, daemon=True)
+            exit_timer.start()
+            
         except Exception as e:
             trading_logger.error(f"停止过程中发生错误: {e}", exc_info=True)
         finally:
-            # 确保进程退出
-            sys.exit(0)
+            # 不在此处强制 sys.exit，以免与事件循环冲突
+            pass
     
     def _safe_notify_system_stop(self):
         """安全发送系统停止通知"""

@@ -16,6 +16,7 @@ class ConfigManager:
         """
         self.config_file = config_file
         self.config = {}
+        self.logger = trading_logger  # 添加logger属性
         
         # 加载.env文件
         load_dotenv()
@@ -129,6 +130,10 @@ class ConfigManager:
         except Exception as e:
             trading_logger.error(f"保存配置文件失败: {str(e)}", exc_info=True)
             raise
+    
+    def get_telegram_config(self) -> dict:
+        """获取 Telegram 配置"""
+        return self.config.get('notification', {}).get('telegram', {})
 
     def _ensure_path(self, keys: list):
         """Ensures the path exists in the config dict, creating it if necessary."""
@@ -217,4 +222,13 @@ class ConfigManager:
         self._set_env_var(['database', 'filename'], 'DB_FILENAME', 'trading_data.sqlite')
             
     def get_all(self) -> Dict[str, Any]:
-        return self.config.copy() 
+        return self.config.copy()
+    
+    def get_executor(self):
+        """获取交易执行器实例"""
+        try:
+            from executor.binance_executor import BinanceExecutor
+            return BinanceExecutor(self)
+        except Exception as e:
+            self.logger.error(f"Failed to create executor: {e}")
+            return None 

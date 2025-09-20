@@ -11,6 +11,7 @@ from datetime import datetime, timezone, timedelta
 from rpc.simple_rpc import RPC
 from rpc.telegram import Telegram
 from rpc.cpt_bridge import CPTRPCBridge
+from rpc.http_api import create_rpc_api_server
 from utils.config_manager import ConfigManager
 from utils.logger import trading_logger
 
@@ -31,6 +32,10 @@ class EnhancedTelegramIntegration:
         # 创建 Telegram 实例
         self.telegram: Optional[Telegram] = None
         self._setup_telegram()
+        
+        # 创建 HTTP API 服务器
+        self.http_api_server = None
+        self._setup_http_api()
         
         # 运行状态
         self.is_running = False
@@ -106,6 +111,27 @@ class EnhancedTelegramIntegration:
             trading_logger.info("增强 Telegram 机器人已初始化")
         except Exception as e:
             trading_logger.error(f"Telegram 初始化失败: {e}", exc_info=True)
+    
+    def _setup_http_api(self):
+        """设置 HTTP API 服务器"""
+        try:
+            # 从配置中获取HTTP API设置
+            http_config = self.config_manager.get('http_api', {})
+            if not http_config.get('enabled', False):
+                trading_logger.info("HTTP API 未启用")
+                return
+            
+            # 获取服务器配置
+            host = http_config.get('host', 'localhost')
+            port = http_config.get('port', 8080)
+            
+            # 创建HTTP API服务器
+            self.http_api_server = create_rpc_api_server(self.rpc, host, port)
+            trading_logger.info(f"HTTP API 服务器已初始化: {host}:{port}")
+            
+        except Exception as e:
+            trading_logger.error(f"HTTP API 初始化失败: {e}", exc_info=True)
+            self.http_api_server = None
     
     # =============== 交易所辅助 ===============
     def _get_public_exchange(self):
@@ -1221,6 +1247,32 @@ class EnhancedTelegramIntegration:
         self.rpc._rpc_status_table = _rpc_status_table_patched
         self.rpc._rpc_balance = _rpc_balance_patched
         self.rpc._rpc_trade_statistics = _rpc_trade_statistics_patched
+
+        # 包装 start/stop/pause 以通过HTTP触发时发送Telegram通知
+        def _wrap_and_notify(name: str, func):
+            def _wrapped():
+                result = func()
+                try:
+                    if self.telegram:
+                        msg_map = {
+                            'start': '🚀 系统启动（HTTP触发）',
+                            'pause': '⏸️ 系统已暂停（HTTP触发）',
+                            'stop': '🛑 系统停止（HTTP触发）',
+                        }
+                        note = msg_map.get(name, f"状态更新（HTTP触发）: {name}")
+                        status_msg = self.bridge.create_rpc_status_msg('status', note)
+                        self.telegram.send_msg(status_msg)
+                except Exception:
+                    pass
+                return result
+            return _wrapped
+
+        if hasattr(self.rpc, '_rpc_start'):
+            self.rpc._rpc_start = _wrap_and_notify('start', self.rpc._rpc_start)
+        if hasattr(self.rpc, '_rpc_pause'):
+            self.rpc._rpc_pause = _wrap_and_notify('pause', self.rpc._rpc_pause)
+        if hasattr(self.rpc, '_rpc_stop'):
+            self.rpc._rpc_stop = _wrap_and_notify('stop', self.rpc._rpc_stop)
     
     def start(self):
         """启动 Telegram 集成"""
@@ -1231,6 +1283,14 @@ class EnhancedTelegramIntegration:
         
         if self.telegram:
             trading_logger.info("Telegram 机器人已启动")
+        
+        # 启动 HTTP API 服务器
+        if self.http_api_server:
+            try:
+                self.http_api_server.start()
+                trading_logger.info("HTTP API 服务器已启动")
+            except Exception as e:
+                trading_logger.error(f"启动 HTTP API 服务器失败: {e}", exc_info=True)
     
     def send_system_ready_message(self):
         """发送系统就绪消息"""
@@ -1308,6 +1368,14 @@ class EnhancedTelegramIntegration:
             except Exception:
                 pass
             self.telegram = None
+        
+        # 停止 HTTP API 服务器
+        if self.http_api_server:
+            try:
+                self.http_api_server.stop()
+                trading_logger.info("HTTP API 服务器已停止")
+            except Exception as e:
+                trading_logger.error(f"停止 HTTP API 服务器失败: {e}", exc_info=True)
     
     def send_startup_message(self):
         """发送启动消息（兼容 NotificationManager 调用）"""

@@ -805,23 +805,27 @@ class BinanceExecutor:
                 trading_logger.info(f"No active {position_side} position found for {ccxt_symbol} to close.")
                 closed_position_successfully = True # No position to close is a form of success for this operation
 
-            # Regardless of position found/closed, always attempt to cancel all open orders for this symbol
-            # This cleans up any orphaned SL/TP orders, especially important in cyclical strategy.
-            trading_logger.info(f"Attempting to cancel all open orders for {ccxt_symbol} after position close attempt.")
-            try:
-                # Some exchanges might throw error if no orders to cancel. Check `exchange.has['cancelAllOrders']` if needed.
-                # Binance does not error if no orders exist.
-                cancel_response = await self.exchange.cancel_all_orders(ccxt_symbol)
-                trading_logger.info(f"Successfully sent cancel_all_orders for {ccxt_symbol}. Response: {cancel_response}")
-                # `closed_position_successfully` remains based on the actual position closing part.
-                # The overall function success depends on both parts if we want to be strict.
-                # For now, returning `closed_position_successfully` primarily indicates if the position part was okay.
-                # The cancel_all_orders is best-effort cleanup.
-                return closed_position_successfully # Return true if position close attempt was okay and cancel sent
-            except Exception as e_cancel:
-                trading_logger.error(f"Error cancelling orders for {ccxt_symbol}: {e_cancel}", exc_info=True)
-                # If closing position was successful but cancelling orders failed, this is a partial failure.
-                return False # Indicate overall failure if cancel_all_orders fails critically.
+            # Only cancel open orders if we actually found a position for this symbol/side.
+            # This avoids wiping fresh SL/TP orders when no active position existed.
+            if target_position:
+                trading_logger.info(f"Attempting to cancel all open orders for {ccxt_symbol} after position close attempt.")
+                try:
+                    # Some exchanges might throw error if no orders to cancel. Check `exchange.has['cancelAllOrders']` if needed.
+                    # Binance does not error if no orders exist.
+                    cancel_response = await self.exchange.cancel_all_orders(ccxt_symbol)
+                    trading_logger.info(f"Successfully sent cancel_all_orders for {ccxt_symbol}. Response: {cancel_response}")
+                    # `closed_position_successfully` remains based on the actual position closing part.
+                    # The overall function success depends on both parts if we want to be strict.
+                    # For now, returning `closed_position_successfully` primarily indicates if the position part was okay.
+                    # The cancel_all_orders is best-effort cleanup.
+                    return closed_position_successfully # Return true if position close attempt was okay and cancel sent
+                except Exception as e_cancel:
+                    trading_logger.error(f"Error cancelling orders for {ccxt_symbol}: {e_cancel}", exc_info=True)
+                    # If closing position was successful but cancelling orders failed, this is a partial failure.
+                    return False # Indicate overall failure if cancel_all_orders fails critically.
+            else:
+                trading_logger.info(f"Skip cancelling open orders for {ccxt_symbol} because no active {position_side} position was found.")
+                return closed_position_successfully
 
         except ccxt.NetworkError as e:
             trading_logger.error(f"Network error during close_all_positions_for_symbol_side ({position_side} for {symbol}): {e}", exc_info=True)
